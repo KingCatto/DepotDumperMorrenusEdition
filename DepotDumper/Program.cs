@@ -34,6 +34,7 @@ namespace DepotDumper
             if (username == "" || password == "")
             {
                 Console.WriteLine("Username/Password Empty.");
+                System.Environment.Exit(1);
                 return 1;
             }
 
@@ -164,10 +165,12 @@ namespace DepotDumper
                 sw.Close();
                 sw2.Close();
                 Console.WriteLine("\nDone!!");
+                System.Environment.Exit(0);
                 return 0;
             }
             else
             {
+                System.Environment.Exit(1);
                 return 1;
             }
         }
