@@ -63,13 +63,12 @@ namespace DepotDumper
 
             #endregion
 
-            InitializeSteam3(username, password);
             sw = new StreamWriter($"steam.keys");
             sw.AutoFlush = true;
             sw2 = new StreamWriter($"steam.appids");
             sw2.AutoFlush = true;
 
-            if (InitializeSteam(username, password))
+            if (InitializeSteam3(username, password))
             {
                 Console.WriteLine("Getting licenses...");
                 steam3.WaitUntilCallback(() => { }, () => { return steam3.Licenses != null; });
