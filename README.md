@@ -1,14 +1,28 @@
-DepotDownloader
+DepotDumper
 ===============
 
-Mass depot key dumper utilizing the SteamKit2 library. Supports .NET Core 2.0
+Steam depot key dumper utilizing the SteamKit2 library. Supports .NET 5.0
+Modified from https://github.com/SteamRE/DepotDownloader
+All tokens and keys are global and are always the same to every Steam user, they are not unique to your account and do not identify you.
 
-Resulting files:
+### Dumping all depots in the steam account
+```
+dotnet DepotDumper.dll -username <username> -password <password> [other options]
+```
 
-**{username}_steam.appids**
+## Parameters
+
+Parameter | Description
+--------- | -----------
+-username \<user>		| the username of the account to dump keys.
+-password \<pass>		| the password of the account to dump keys.
+-remember-password		| if set, remember the password for subsequent logins of this user. (Use -username <username> -remember-password as login credentials)
+-loginid \<#>			| a unique 32-bit integer Steam LogonID in decimal, required if running multiple instances of DepotDownloader concurrently. 
+
+## Result files
+**steam.appids**
 * Contains "appId;appName" lines
 
-**{username}_steam.keys**
+**steam.keys**
 * Contains "depotId;depotKey" lines
-
 
