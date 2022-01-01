@@ -18,7 +18,7 @@ Parameter | Description
 -password \<pass>		| the password of the account to dump keys.
 -remember-password		| if set, remember the password for subsequent logins of this user. (Use -username <username> -remember-password as login credentials)
 -loginid \<#>			| a unique 32-bit integer Steam LogonID in decimal, required if running multiple instances of DepotDownloader concurrently. 
-
+-select                 | select depot to dump key.
 ## Result files
 **steam.appids**
 * Contains "appId;appName" lines

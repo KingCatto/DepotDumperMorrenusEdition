@@ -301,7 +301,6 @@ namespace DepotDumper
                 Console.WriteLine("Got depot key for {0} result: {1}", depotKey.DepotID, depotKey.Result);
                 if (depotKey.Result != EResult.OK)
                 {
-                    Abort();
                     return;
                 }
                 Program.sw.WriteLine($"{depotKey.DepotID};{string.Concat(depotKey.DepotKey.Select(b => b.ToString("X2")).ToArray())}");
@@ -488,7 +487,7 @@ namespace DepotDumper
             }
         }
 
-        private void Reconnect()
+        public void Reconnect()
         {
             bIsConnectionRecovery = true;
             steamClient.Disconnect();

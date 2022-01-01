@@ -41,6 +41,7 @@ namespace DepotDumper
 
             AccountSettingsStore.LoadFromFile("account.config");
 
+
             #region Common Options
 
             if (HasParameter(args, "-debug"))
@@ -60,6 +61,7 @@ namespace DepotDumper
             DepotDumper.Config.RememberPassword = HasParameter(args, "-remember-password");
             DepotDumper.Config.DumpDirectory = GetParameter<string>(args, "-dir");
             DepotDumper.Config.LoginID = HasParameter(args, "-loginid") ? GetParameter<uint>(args, "-loginid") : null;
+            bool select = HasParameter(args, "-select");
 
             #endregion
 
@@ -68,7 +70,7 @@ namespace DepotDumper
             sw2 = new StreamWriter($"steam.appids");
             sw2.AutoFlush = true;
 
-            if (InitializeSteam3(username, password))
+            if (InitializeSteam(username, password))
             {
                 Console.WriteLine("Getting licenses...");
                 steam3.WaitUntilCallback(() => { }, () => { return steam3.Licenses != null; });
@@ -123,6 +125,7 @@ namespace DepotDumper
 
                             foreach (var depotSection in depots.Children)
                             {
+
                                 uint id = uint.MaxValue;
 
                                 if (!uint.TryParse(depotSection.Name, out id) || id == uint.MaxValue)
@@ -136,6 +139,12 @@ namespace DepotDumper
 
                                 if (!AccountHasAccess(id))
                                     continue;
+
+                                if (select)
+                                {
+                                    Console.WriteLine("Dump depot " + depotSection + "? (Press N to skip/any other key to continue)");
+                                    if (Console.ReadKey().Key.ToString() == "N") { Console.WriteLine("\n"); continue; }
+                                }
 
                                 int attempt = 1;
                                 while (!steam3.DepotKeys.ContainsKey(id) && attempt <= 3)
@@ -192,7 +201,7 @@ namespace DepotDumper
             // capture the supplied password in case we need to re-use it after checking the login key
             DepotDumper.Config.SuppliedPassword = password;
 
-            return DepotDumper.InitializeSteam3(username, password);
+            return InitializeSteam3(username, password);
         }
 
         static int IndexOfParam(string[] args, string param)
@@ -266,6 +275,7 @@ namespace DepotDumper
             Console.WriteLine("\t-password <pass>\t\t- the password of the account to dump keys.");
             Console.WriteLine("\t-remember-password\t\t- if set, remember the password for subsequent logins of this user. (Use -username <username> -remember-password as login credentials)");
             Console.WriteLine("\t-loginid <#>\t\t- a unique 32-bit integer Steam LogonID in decimal, required if running multiple instances of DepotDumper concurrently.");
+            Console.WriteLine("\t-select \t\t- select depot to dump key.");
         }
         private static Steam3Session.Credentials steam3Credentials;
         public static bool InitializeSteam3(string username, string password)
