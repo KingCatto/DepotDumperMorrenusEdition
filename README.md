@@ -1,9 +1,9 @@
 DepotDumper
 ===============
 
-Steam depot key dumper utilizing the SteamKit2 library. Supports .NET 5.0
-Modified from https://github.com/SteamRE/DepotDownloader
-All tokens and keys are global and are always the same to every Steam user, they are not unique to your account and do not identify you.
+Steam depot key dumper utilizing the SteamKit2 library. Supports .NET 5.0 
+Modified from https://github.com/SteamRE/DepotDownloader 
+All tokens and keys are global and are always the same to every Steam user, they are not unique to your account and do not identify you. 
 
 ### Dumping all depots in the steam account
 ```
