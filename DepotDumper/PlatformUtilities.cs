@@ -1,84 +1,51 @@
-using System;
+// This file is subject to the terms and conditions defined
+// in file 'LICENSE', which is part of this source code package.
+
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 
 namespace DepotDumper
 {
-    public static class PlatformUtilities
+    static class PlatformUtilities
     {
-        private const int ModeExecuteOwner = 0x0040;
-        private const int ModeExecuteGroup = 0x0008;
-        private const int ModeExecuteOther = 0x0001;
-        private const int ModeExecute = ModeExecuteOwner | ModeExecuteGroup | ModeExecuteOther;
-
-        [StructLayout(LayoutKind.Explicit, Size = 144)]
-        private readonly struct StatLinux
-        {
-            [FieldOffset(24)] public readonly uint st_mode;
-        }
-
-        [StructLayout(LayoutKind.Explicit, Size = 144)]
-        private readonly struct StatOSX
-        {
-            [FieldOffset(4)] public readonly ushort st_mode;
-        }
-
-        [DllImport("libc", EntryPoint = "__xstat", SetLastError = true)]
-        private static extern int statLinux(int version, string path, out StatLinux statLinux);
-
-        [DllImport("libc", EntryPoint = "stat", SetLastError = true)]
-        private static extern int statOSX(string path, out StatOSX stat);
-
-        [DllImport("libc", EntryPoint = "stat$INODE64", SetLastError = true)]
-        private static extern int statOSXCompat(string path, out StatOSX stat);
-
-        [DllImport("libc", SetLastError = true)]
-        private static extern int chmod(string path, uint mode);
-
-        [DllImport("libc", SetLastError = true)]
-        private static extern int chmod(string path, ushort mode);
-
-        [DllImport("libc", CallingConvention = CallingConvention.Cdecl, SetLastError = true)]
-        private static extern IntPtr strerror(int errno);
-
-        private static void ThrowIf(int i)
-        {
-            if (i == -1)
-            {
-                var errno = Marshal.GetLastWin32Error();
-                throw new Exception(Marshal.PtrToStringAnsi(strerror(errno)));
-            }
-        }
-
         public static void SetExecutable(string path, bool value)
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                ThrowIf(statLinux(1, path, out var stat));
-
-                var hasExecuteMask = (stat.st_mode & ModeExecute) == ModeExecute;
-                if (hasExecuteMask != value)
-                {
-                    ThrowIf(chmod(path, (uint)(value
-                        ? stat.st_mode | ModeExecute
-                        : stat.st_mode & ~ModeExecute)));
-                }
+                return;
             }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+
+            const UnixFileMode ModeExecute = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+
+            var mode = File.GetUnixFileMode(path);
+            var hasExecuteMask = (mode & ModeExecute) == ModeExecute;
+            if (hasExecuteMask != value)
             {
-                StatOSX stat;
-
-                ThrowIf(RuntimeInformation.ProcessArchitecture == Architecture.Arm64
-                    ? statOSX(path, out stat)
-                    : statOSXCompat(path, out stat));
-
-                var hasExecuteMask = (stat.st_mode & ModeExecute) == ModeExecute;
-                if (hasExecuteMask != value)
-                {
-                    ThrowIf(chmod(path, (ushort)(value
-                        ? stat.st_mode | ModeExecute
-                        : stat.st_mode & ~ModeExecute)));
-                }
+                File.SetUnixFileMode(path, value
+                    ? mode | ModeExecute
+                    : mode & ~ModeExecute);
             }
+        }
+
+        [SupportedOSPlatform("windows5.0")]
+        public static void VerifyConsoleLaunch()
+        {
+            // Reference: https://devblogs.microsoft.com/oldnewthing/20160125-00/?p=92922
+            var processList = new uint[2];
+            var processCount = Windows.Win32.PInvoke.GetConsoleProcessList(processList);
+
+            if (processCount != 1)
+            {
+                return;
+            }
+
+            _ = Windows.Win32.PInvoke.MessageBox(
+                Windows.Win32.Foundation.HWND.Null,
+                "Depot Downloader is a console application; there is no GUI.\n\nIf you do not pass any command line parameters, it prints usage info and exits.\n\nYou must use this from a terminal/console.",
+                "Depot Downloader",
+                Windows.Win32.UI.WindowsAndMessaging.MESSAGEBOX_STYLE.MB_OK | Windows.Win32.UI.WindowsAndMessaging.MESSAGEBOX_STYLE.MB_ICONWARNING
+            );
         }
     }
 }
