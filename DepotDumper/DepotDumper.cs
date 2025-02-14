@@ -413,11 +413,6 @@ namespace DepotDumper
 
                 connection = cdnPool.GetConnection(cts.Token);
 
-                Console.WriteLine("Downloading manifest {0} from {1} with {2}",
-                    manifestId,
-                    connection,
-                    cdnPool.ProxyServer != null ? cdnPool.ProxyServer : "no proxy");
-
                 int retryCount = 0;
                 const int maxRetries = 3;
                 DepotManifest manifest = null;
@@ -425,6 +420,8 @@ namespace DepotDumper
                 {
                     try
                     {
+                        cts.Token.ThrowIfCancellationRequested();
+
                         string cdnToken = null;
                         if (steam3.CDNAuthTokens.TryGetValue((depotId, connection.Host),
                                 out var authTokenCallbackPromise))
@@ -453,6 +450,11 @@ namespace DepotDumper
                                 cts.Cancel();
                             }
                         }
+
+                        Console.WriteLine("Downloading manifest {0} from {1} with {2}",
+                            manifestId,
+                            connection,
+                            cdnPool.ProxyServer != null ? cdnPool.ProxyServer : "no proxy");
 
                         manifest = await cdnPool.CDNClient.DownloadManifestAsync(
                             depotId,
