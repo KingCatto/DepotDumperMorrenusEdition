@@ -2,9 +2,9 @@ name: DepotDumperMorrenusEdition
 
 on:
   push:
-    branches: [ "main" ] # Or your default branch (e.g., master)
+    branches: [ "master" ] # Or your default branch (e.g., master)
   pull_request:
-    branches: [ "main" ] # Or your default branch (e.g., master)
+    branches: [ "master" ] # Or your default branch (e.g., master)
 
 jobs:
   build:
