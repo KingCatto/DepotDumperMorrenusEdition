@@ -1,6 +1,6 @@
-# .github/workflows/dotnet-build.yml
+n# .github/workflows/dotnet-build.yml
 
-name: .NET Build and Release
+name: DepotDumperMorrenusEdition
 
 on:
   push:
