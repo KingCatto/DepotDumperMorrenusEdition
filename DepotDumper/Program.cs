@@ -12,7 +12,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using SteamKit2;
 using SteamKit2.CDN;
-
 namespace DepotDumper
 {
     class Program
@@ -26,18 +25,15 @@ namespace DepotDumper
             }
             return -1;
         }
-
         public static bool HasParameter(string[] args, string param)
         {
             return IndexOfParam(args, param) > -1;
         }
-
         public static T GetParameter<T>(string[] args, string param, T defaultValue = default)
         {
             var index = IndexOfParam(args, param);
             if (index == -1 || index == (args.Length - 1))
                 return defaultValue;
-
             var strParam = args[index + 1];
             var converter = TypeDescriptor.GetConverter(typeof(T));
             if (converter != null)
@@ -55,288 +51,261 @@ namespace DepotDumper
             }
             return default;
         }
-
         static async Task<int> Main(string[] args)
         {
             string configPathArg = null;
             ConfigFile config = null;
-
-            // Initialize statistics tracking early
             StatisticsTracker.Initialize();
-
             bool isDoubleClick = args.Length == 0;
             if (isDoubleClick)
             {
                 Console.WriteLine("DepotDumper started via double-click...");
-                string configPath = "config.json";
+                string configPath = Path.Combine(AppContext.BaseDirectory, "config.json");
                 config = ConfigFile.Load(configPath);
                 config.ApplyToDepotDumperConfig();
-                args = new[] { "-config", configPath, "-generate-reports" };
+                List<string> effectiveArgs = new List<string>();
+                if (!string.IsNullOrWhiteSpace(configPath))
+                {
+                    effectiveArgs.AddRange(new[] { "-config", configPath });
+                }
+                string[] originalArgs = Environment.GetCommandLineArgs().Skip(1).ToArray();
+                if (!HasParameter(originalArgs, "-generate-reports") && !HasParameter(args, "-generate-reports"))
+                {
+                    effectiveArgs.Add("-generate-reports");
+                }
+                args = effectiveArgs.ToArray();
                 Console.WriteLine($"Loading configuration from: {configPath}");
-                Console.WriteLine("Output will be saved to reports directory.");
+                if (HasParameter(args, "-generate-reports"))
+                {
+                    Console.WriteLine("Output will be saved to reports directory.");
+                }
                 Console.WriteLine();
             }
-
             if (args.Length > 0 && (args[0] == "-V" || args[0] == "--version"))
             {
                 PrintVersion(true);
-                if (isDoubleClick) { Console.WriteLine("\nPress any key to exit..."); Console.ReadKey(); }
                 return 0;
             }
-
             if (args.Length >= 1 && args[0].ToLower() == "config")
             {
                 int result = ConfigCommand.Run(args);
                 if (isDoubleClick) { Console.WriteLine("\nPress any key to exit..."); Console.ReadKey(); }
                 return result;
             }
-
-            if (HasParameter(args, "-config"))
-            {
-                configPathArg = GetParameter<string>(args, "-config");
-            }
-            config = configPathArg != null ? ConfigFile.Load(configPathArg) : ConfigFile.Load();
+            configPathArg = GetParameter<string>(args, "-config");
+            string defaultConfigPath = Path.Combine(AppContext.BaseDirectory, "config.json");
+            string pathToLoad = configPathArg ?? defaultConfigPath;
+            bool loadConfigFromFile = !string.IsNullOrEmpty(configPathArg) || File.Exists(defaultConfigPath);
+            config = loadConfigFromFile
+                 ? ConfigFile.Load(pathToLoad)
+                 : new ConfigFile();
             config.MergeCommandLineParameters(args);
-
+            config.ApplyToDepotDumperConfig();
             Ansi.Init();
             DebugLog.Enabled = false;
-            AccountSettingsStore.LoadFromFile("account.config");
-
-            bool generateReports = HasParameter(args, "-generate-reports") || isDoubleClick;
+            AccountSettingsStore.LoadFromFile(Path.Combine(AppContext.BaseDirectory, "account.config"));
+            bool generateReports = HasParameter(args, "-generate-reports");
             string dumpPath = string.IsNullOrWhiteSpace(DepotDumper.Config.DumpDirectory) ? DepotDumper.DEFAULT_DUMP_DIR : DepotDumper.Config.DumpDirectory;
+            try { Directory.CreateDirectory(dumpPath); } catch (Exception ex) { Console.WriteLine($"Warning: Could not create dump directory '{dumpPath}': {ex.Message}"); }
             string reportsDirectory = GetParameter<string>(args, "-reports-dir") ?? Path.Combine(dumpPath, "reports");
             string logsDirectory = GetParameter<string>(args, "-logs-dir") ?? Path.Combine(dumpPath, "logs");
             LogLevel logLevel = LogLevel.Info;
-
             if (HasParameter(args, "-log-level"))
             {
                 string levelStr = GetParameter<string>(args, "-log-level", "info").ToLower();
-                switch (levelStr)
+                if (!Enum.TryParse<LogLevel>(levelStr, true, out logLevel))
                 {
-                    case "debug": logLevel = LogLevel.Debug; break;
-                    case "info": logLevel = LogLevel.Info; break;
-                    case "warning": logLevel = LogLevel.Warning; break;
-                    case "error": logLevel = LogLevel.Error; break;
-                    case "critical": logLevel = LogLevel.Critical; break;
-                    default: logLevel = LogLevel.Info; break;
+                    logLevel = LogLevel.Info;
+                    Console.WriteLine($"Warning: Invalid log level '{levelStr}'. Defaulting to Info.");
                 }
             }
-
-            Directory.CreateDirectory(logsDirectory);
+            try { Directory.CreateDirectory(logsDirectory); } catch (Exception ex) { Console.WriteLine($"Warning: Could not create logs directory '{logsDirectory}': {ex.Message}"); }
             string logFilePath = Path.Combine(logsDirectory, $"depotdumper_{DateTime.Now:yyyyMMdd_HHmmss}.log");
-            Logger.Initialize(logFilePath, logLevel);
-
-            // Re-initialize statistics tracker after logging is set up
+            Logger.Initialize(logFilePath, logLevel, toConsole: !Console.IsOutputRedirected, toFile: true);
             StatisticsTracker.Initialize();
-
             if (HasParameter(args, "-debug") || logLevel == LogLevel.Debug)
             {
                 PrintVersion(true);
                 DebugLog.Enabled = true;
-                DebugLog.AddListener((category, message) => { Console.WriteLine("[{0}] {1}", category, message); });
+                DebugLog.AddListener((category, message) => { Logger.Debug($"[{category}] {message}"); });
                 Logger.Info("Debug logging enabled.");
             }
-
             bool saveConfig = HasParameter(args, "-save-config");
             var username = config.Username;
             var password = config.Password;
             uint specificAppId = GetParameter(args, "-appid", DepotDumper.INVALID_APP_ID);
             string appIdsFilePath = GetParameter<string>(args, "-appids-file");
             List<uint> appIdsList = new List<uint>();
-
+            bool processAll = false;
             if (!string.IsNullOrEmpty(appIdsFilePath))
             {
-                if (!File.Exists(appIdsFilePath))
-                {
-                    Logger.Error($"Error: App IDs file not found: {appIdsFilePath}");
-                    Console.WriteLine($"Error: App IDs file not found: {appIdsFilePath}");
-                    if (isDoubleClick) { Console.WriteLine("\nPress any key to exit..."); Console.ReadKey(); }
-                    return 1;
-                }
-                try
-                {
-                    string[] lines = File.ReadAllLines(appIdsFilePath);
-                    foreach (string line in lines)
-                    {
-                        string trimmed = line.Trim();
-                        if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith("#")) continue;
-                        if (uint.TryParse(trimmed, out uint appId)) appIdsList.Add(appId);
-                        else Logger.Warning($"Warning: Invalid app ID format in file: '{trimmed}'");
-                    }
-                    if (appIdsList.Count == 0) { Logger.Error("Error: No valid app IDs found in the file."); Console.WriteLine("Error: No valid app IDs found in the file."); if (isDoubleClick) { /* Wait */ } return 1; }
-                    Logger.Info($"Loaded {appIdsList.Count} app IDs from file: {appIdsFilePath}");
-                    Console.WriteLine($"Loaded {appIdsList.Count} app IDs from file: {appIdsFilePath}");
-                }
-                catch (Exception ex) { Logger.Error($"Error reading app IDs file: {ex.Message}"); Console.WriteLine($"Error reading app IDs file: {ex.Message}"); if (isDoubleClick) { /* Wait */ } return 1; }
+                if (!File.Exists(appIdsFilePath)) { Logger.Error($"Error: App IDs file not found: {appIdsFilePath}"); return 1; }
+                try { Logger.Info($"Processing App IDs from file: {appIdsFilePath}"); }
+                catch (Exception ex) { Logger.Error($"Error reading app IDs file: {ex.Message}"); return 1; }
             }
-            else if (specificAppId == DepotDumper.INVALID_APP_ID && config.AppIdsToProcess.Count > 0)
+            else if (specificAppId != DepotDumper.INVALID_APP_ID)
+            {
+                Logger.Info($"Processing specific AppID: {specificAppId} from command line.");
+                appIdsList.Add(specificAppId);
+                if (!config.AppIdsToProcess.Contains(specificAppId)) { config.AppIdsToProcess.Add(specificAppId); }
+            }
+            else if (config.AppIdsToProcess != null && config.AppIdsToProcess.Any())
             {
                 appIdsList.AddRange(config.AppIdsToProcess.Where(id => !config.ExcludedAppIds.Contains(id)));
-                if (appIdsList.Count > 0)
-                {
-                    Logger.Info($"Loaded {appIdsList.Count} app IDs from configuration file.");
-                    Console.WriteLine($"Loaded {appIdsList.Count} app IDs from configuration file.");
-                    int excludedCount = config.AppIdsToProcess.Count - appIdsList.Count;
-                    if (excludedCount > 0)
-                    {
-                        Logger.Info($"Skipping {excludedCount} excluded app IDs from configuration.");
-                        Console.WriteLine($"Skipping {excludedCount} excluded app IDs from configuration.");
-                    }
-                }
+                if (appIdsList.Count > 0) { Logger.Info($"Processing {appIdsList.Count} App IDs from configuration file."); }
+                else if (config.AppIdsToProcess.Any()) { Logger.Warning("All App IDs specified in the configuration are excluded."); return 1; }
+                else { Logger.Info("AppIdsToProcess is empty in config. Processing all apps from licenses."); processAll = true; }
             }
-
-            if (specificAppId != DepotDumper.INVALID_APP_ID)
+            else
             {
-                if (!config.AppIdsToProcess.Contains(specificAppId))
-                {
-                    config.AppIdsToProcess.Add(specificAppId);
-                }
+                Logger.Info("No specific App IDs provided. Processing all apps from licenses.");
+                processAll = true;
             }
-
             int exitCode = 0;
             bool success = false;
-            if (InitializeSteam(username, password, isDoubleClick))
+            if (InitializeSteam(username, ref password, isDoubleClick))
             {
+                if (processAll)
+                {
+                    Console.WriteLine("Waiting for license list...");
+                    Logger.Info("Waiting for license list callback...");
+                    try
+                    {
+                        if (DepotDumper.steam3 == null) throw new InvalidOperationException("Steam3 session is not initialized.");
+                        await DepotDumper.steam3.LicenseListReady.WaitAsync(TimeSpan.FromSeconds(45));
+                        if (DepotDumper.steam3.Licenses == null)
+                        {
+                            throw new InvalidOperationException("License list task completed but license list is still null.");
+                        }
+                        Console.WriteLine("License list received.");
+                        Logger.Info($"License list ready. Found {DepotDumper.steam3.Licenses.Count} licenses.");
+                    }
+                    catch (TimeoutException)
+                    {
+                        Console.WriteLine("Error getting license list: Timed out waiting for license list from Steam.");
+                        Logger.Error("Failed to get license list: Timed out.");
+                        StatisticsTracker.TrackError("Failed to get license list: Timeout");
+                        exitCode = 1;
+                        success = false;
+                        processAll = false;
+                        appIdsList.Clear();
+                    }
+                    catch (Exception licenseEx)
+                    {
+                        Console.WriteLine($"Error getting license list: {licenseEx.Message}");
+                        Logger.Error($"Failed to get license list: {licenseEx.ToString()}");
+                        StatisticsTracker.TrackError($"Failed to get license list: {licenseEx.Message}");
+                        exitCode = 1;
+                        success = false;
+                        processAll = false;
+                        appIdsList.Clear();
+                    }
+                }
+                if (exitCode == 0)
+                {
+                    try
+                    {
+                        bool select = HasParameter(args, "-select");
+                        if (appIdsList.Count > 0)
+                        {
+                            await ProcessMultipleAppsAsync(appIdsList, select, dumpPath, config.MaxConcurrentApps);
+                            success = true;
+                        }
+                        else if (processAll)
+                        {
+                            if (DepotDumper.steam3 != null && DepotDumper.steam3.IsLoggedOn)
+                            {
+                                await DepotDumper.DumpAppAsync(select).ConfigureAwait(false);
+                                success = true;
+                            }
+                            else
+                            {
+                                Logger.Error("Cannot process all apps: Steam3 session is not valid or not logged on.");
+                                throw new InvalidOperationException("Steam session lost before processing all apps.");
+                            }
+                        }
+                        else
+                        {
+                            Logger.Warning("No apps identified for processing.");
+                            Console.WriteLine("No apps to process.");
+                            success = true;
+                        }
+                        if (saveConfig)
+                        {
+                            Logger.Info("Saving configuration as requested by -save-config flag.");
+                            config.Password = password;
+                            config.Username = DepotDumper.steam3?.LoggedInUsername ?? config.Username;
+                            config.RememberPassword = DepotDumper.Config.RememberPassword;
+                            config.Save();
+                        }
+                    }
+                    catch (DepotDumperException ddEx)
+                    {
+                        StatisticsTracker.TrackError(ddEx.Message);
+                        Logger.Error(ddEx.Message);
+                        Console.WriteLine(ddEx.Message);
+                        exitCode = 1;
+                        success = false;
+                    }
+                    catch (OperationCanceledException ocEx)
+                    {
+                        StatisticsTracker.TrackError($"Operation Canceled: {ocEx.Message}");
+                        Logger.Error($"Operation Canceled: {ocEx.Message}");
+                        Console.WriteLine($"Operation Canceled: {ocEx.Message}");
+                        exitCode = 1;
+                        success = false;
+                    }
+                    catch (Exception e)
+                    {
+                        StatisticsTracker.TrackError($"Unhandled exception: {e.ToString()}");
+                        Logger.Critical($"Unhandled exception during processing: {e.ToString()}");
+                        Console.WriteLine($"Processing failed due to an unhandled exception: {e.Message}");
+#if DEBUG
+                         Console.WriteLine(e.ToString());
+#endif
+                        exitCode = 1;
+                        success = false;
+                    }
+                }
                 try
-                {
-                    bool select = HasParameter(args, "-select");
-
-                    if (appIdsList.Count > 0)
-                    {
-                        Logger.Info($"Processing {appIdsList.Count} AppIDs from list.");
-                        await ProcessMultipleAppsAsync(appIdsList, select, dumpPath, config.MaxConcurrentApps);
-                        success = true;
-                    }
-                    else if (specificAppId != DepotDumper.INVALID_APP_ID)
-                    {
-                        Logger.Info($"Processing specific AppID: {specificAppId}");
-
-                        // Track the app start before processing
-                        string appName = "Unknown App";
-                        List<string> appErrors = new List<string>();
-                        try
-                        {
-                            await DepotDumper.steam3?.RequestAppInfo(specificAppId);
-                            appName = DepotDumper.GetAppName(specificAppId);
-                            if (string.IsNullOrEmpty(appName)) appName = $"Unknown App {specificAppId}";
-                        }
-                        catch (Exception ex)
-                        {
-                            appErrors.Add($"Failed to get app name: {ex.Message}");
-                            Logger.Warning($"Failed to get app name for {specificAppId}: {ex.Message}");
-                        }
-
-                        // Start tracking this app
-                        StatisticsTracker.TrackAppStart(specificAppId, appName);
-
-                        // Process the app
-                        await DepotDumper.DumpAppAsync(select, specificAppId).ConfigureAwait(false);
-
-                        // Mark app as successfully completed
-                        StatisticsTracker.TrackAppCompletion(specificAppId, true, appErrors.Count > 0 ? appErrors : null);
-
-                        success = true;
-                    }
-                    else
-                    {
-                        Logger.Info("Processing all apps from licenses.");
-                        await DepotDumper.DumpAppAsync(select).ConfigureAwait(false);
-                        success = true;
-                    }
-
-                    if (saveConfig)
-                    {
-                        Logger.Info("Saving configuration as requested by -save-config flag.");
-                        config.Save();
-                    }
-                }
-                catch (DepotDumperException ddEx)
-                {
-                    // Track failure if processing a specific app
-                    if (specificAppId != DepotDumper.INVALID_APP_ID)
-                    {
-                        StatisticsTracker.TrackAppCompletion(specificAppId, false, new List<string> { ddEx.Message });
-                    }
-                    StatisticsTracker.TrackError(ddEx.Message);
-
-                    Logger.Error(ddEx.Message);
-                    Console.WriteLine(ddEx.Message);
-                    exitCode = 1;
-                    success = false;
-                }
-                catch (OperationCanceledException ocEx)
-                {
-                    // Track failure if processing a specific app
-                    if (specificAppId != DepotDumper.INVALID_APP_ID)
-                    {
-                        StatisticsTracker.TrackAppCompletion(specificAppId, false, new List<string> { ocEx.Message });
-                    }
-                    StatisticsTracker.TrackError($"Operation Canceled: {ocEx.Message}");
-
-                    Logger.Error($"Operation Canceled: {ocEx.Message}");
-                    Console.WriteLine($"Operation Canceled: {ocEx.Message}");
-                    exitCode = 1;
-                    success = false;
-                }
-                catch (Exception e)
-                {
-                    // Track failure if processing a specific app
-                    if (specificAppId != DepotDumper.INVALID_APP_ID)
-                    {
-                        StatisticsTracker.TrackAppCompletion(specificAppId, false, new List<string> { e.ToString() });
-                    }
-                    StatisticsTracker.TrackError($"Unhandled exception: {e.Message}");
-
-                    Logger.Critical($"Unhandled exception during processing: {e.ToString()}");
-                    Console.WriteLine($"Download failed due to an unhandled exception: {e.Message}");
-                    exitCode = 1;
-                    success = false;
-                }
-                finally
                 {
                     if (generateReports)
                     {
                         try
                         {
-                            // Print statistics summary to console
                             StatisticsTracker.PrintSummary();
-
-                            // Get a summary for the reports
                             var summary = StatisticsTracker.GetSummary();
                             ReportGenerator.SaveAllReports(summary, reportsDirectory);
-
                             Logger.Info($"Reports generated successfully in {reportsDirectory}");
                             Console.WriteLine($"Reports generated successfully in {reportsDirectory}");
                         }
-                        catch (Exception ex)
+                        catch (Exception reportEx)
                         {
-                            Logger.Error($"Failed to generate reports: {ex.Message}");
-                            Console.WriteLine($"Failed to generate reports: {ex.Message}");
+                            Logger.Error($"Failed to generate reports: {reportEx.ToString()}");
+                            Console.WriteLine($"Failed to generate reports: {reportEx.Message}");
                         }
                     }
+                }
+                finally
+                {
                     DepotDumper.ShutdownSteam3();
                     if (isDoubleClick) { PlayCompletionSound(success); }
                 }
             }
             else
             {
-                // Track Steam initialization failure
                 StatisticsTracker.TrackError("Steam initialization failed");
-
                 Logger.Critical("Error: Steam initialization failed.");
                 Console.WriteLine("Error: InitializeSteam failed");
                 exitCode = 1;
             }
-
             if (isDoubleClick)
             {
                 Console.WriteLine("\nProcessing finished. Press any key to exit...");
                 Console.ReadKey();
             }
-
             return exitCode;
         }
-
         private static void PlayCompletionSound(bool success)
         {
             try
@@ -347,37 +316,34 @@ namespace DepotDumper
                     {
                         string successSound = @"C:\Windows\Media\tada.wav";
                         string failureSound = @"C:\Windows\Media\Windows Critical Stop.wav";
-                        string notifySound = @"C:\Windows\Media\Windows Notify.wav";
+                        string notifySound = @"C:\Windows\Media\Windows Notify System Generic.wav";
                         string exclamationSound = @"C:\Windows\Media\Windows Exclamation.wav";
-
                         string soundFile = success ? successSound : failureSound;
-
                         if (!File.Exists(soundFile))
                         {
                             soundFile = success ? notifySound : exclamationSound;
                         }
-
                         if (File.Exists(soundFile))
                         {
                             player.SoundLocation = soundFile;
                             player.Play();
-                            Logger.Debug($"Played sound: {soundFile}");
+                            Logger.Debug($"Played sound: {Path.GetFileName(soundFile)}");
                         }
                         else
                         {
-                            Logger.Warning($"Could not find sound file to play: {soundFile}");
+                            Logger.Warning($"Could not find completion sound file: {soundFile}");
                         }
                     }
                 }
             }
             catch (Exception ex) { Logger.Warning($"Failed to play completion sound: {ex.Message}"); }
         }
-
-        static bool InitializeSteam(string username, string password, bool isDoubleClick = false)
+        static bool InitializeSteam(string username, ref string password, bool isDoubleClick = false)
         {
             if (!DepotDumper.Config.UseQrCode)
             {
-                bool needPassword = username != null && password == null && (!DepotDumper.Config.RememberPassword || !AccountSettingsStore.Instance.LoginTokens.ContainsKey(username));
+                bool hasLoginToken = username != null && AccountSettingsStore.Instance.LoginTokens.ContainsKey(username);
+                bool needPassword = username != null && string.IsNullOrEmpty(password) && (!DepotDumper.Config.RememberPassword || !hasLoginToken);
                 if (needPassword)
                 {
                     do
@@ -386,130 +352,166 @@ namespace DepotDumper
                         password = Console.IsInputRedirected ? Console.ReadLine() : Util.ReadPassword();
                         Console.WriteLine();
                     } while (string.IsNullOrEmpty(password));
+                    Logger.Info("Password obtained from user prompt.");
                 }
-                else if (username == null)
+                else if (username == null && !hasLoginToken)
                 {
-                    Logger.Info("No username given. Using anonymous account.");
+                    Logger.Info("No username given or usable token found. Using anonymous account.");
                     Console.WriteLine("No username given. Using anonymous account.");
+                    username = null;
+                    password = null;
+                }
+                else if (hasLoginToken && DepotDumper.Config.RememberPassword)
+                {
+                    Logger.Info($"Using remembered login token for user '{username}'.");
+                    Console.WriteLine($"Using remembered login token for user '{username}'.");
+                    password = null;
+                }
+                else if (!string.IsNullOrEmpty(password))
+                {
+                    Logger.Debug("Password provided, will attempt password login.");
                 }
             }
-
-            bool result = DepotDumper.InitializeSteam3(username, password);
-
-            if (!result && isDoubleClick)
+            else
             {
-                Logger.Error("Failed to initialize Steam. Please check your configuration or credentials.");
-                Console.WriteLine("Failed to initialize Steam. Please check your configuration or credentials.");
+                Logger.Info("QR Code login selected.");
+                Console.WriteLine("Attempting login using QR Code...");
+                username = null;
+                password = null;
             }
-            else if (!result)
+            SteamUser.LogOnDetails details = new SteamUser.LogOnDetails
             {
-                Logger.Error("Failed to initialize Steam.");
+                Username = username,
+                Password = password,
+                ShouldRememberPassword = DepotDumper.Config.RememberPassword,
+                AccessToken = (username != null && AccountSettingsStore.Instance.LoginTokens.TryGetValue(username, out var token)) ? token : null,
+                LoginID = DepotDumper.Config.LoginID ?? 0x534B32,
+            };
+            try
+            {
+                DepotDumper.steam3 = new Steam3Session(details);
+                if (!DepotDumper.steam3.WaitForCredentials())
+                {
+                    Console.WriteLine("Unable to get steam3 credentials.");
+                    Logger.Error("Unable to get steam3 credentials after session initialization.");
+                    return false;
+                }
             }
-
-            return result;
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during Steam3Session initialization or credential wait: {ex.Message}");
+                Logger.Critical($"Exception during Steam3Session setup: {ex.ToString()}");
+                return false;
+            }
+            Logger.Info("Steam3 initialized and credentials obtained successfully.");
+            _ = Task.Run(DepotDumper.steam3.TickCallbacks);
+            return true;
         }
-
         static async Task ProcessMultipleAppsAsync(List<uint> appIds, bool select, string dumpPath, int maxConcurrent)
         {
             if (maxConcurrent <= 0) maxConcurrent = 1;
             Console.WriteLine($"Processing {appIds.Count} app IDs with concurrency level: {maxConcurrent}");
             Logger.Info($"Processing {appIds.Count} app IDs with concurrency level: {maxConcurrent}");
-
             using var semaphore = new SemaphoreSlim(maxConcurrent);
             var tasks = new List<Task>();
             var results = new ConcurrentDictionary<uint, bool>();
-
             foreach (uint appId in appIds)
             {
                 await semaphore.WaitAsync();
                 tasks.Add(Task.Run(async () =>
                 {
                     bool appSuccess = false;
+                    string appName = $"App {appId}";
                     List<string> appErrors = new List<string>();
-
+                    DateTime startTime = DateTime.Now;
                     try
                     {
                         Console.WriteLine($"-------------------------------------------");
-                        Console.WriteLine($"Starting processing for app ID: {appId}");
-                        Logger.Info($"Starting processing for app ID: {appId}");
-
-                        // Get app name for tracking
-                        string appName = "Unknown App";
+                        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Starting processing for AppID: {appId}");
+                        Logger.Info($"Starting processing for AppID: {appId}");
                         try
                         {
-                            await DepotDumper.steam3?.RequestAppInfo(appId);
-                            appName = DepotDumper.GetAppName(appId);
-                            if (string.IsNullOrEmpty(appName)) appName = $"Unknown App {appId}";
+                            if (DepotDumper.steam3 != null)
+                            {
+                                await DepotDumper.steam3.RequestAppInfo(appId);
+                                appName = DepotDumper.GetAppName(appId);
+                                if (string.IsNullOrEmpty(appName)) appName = $"Unknown App {appId}";
+                            }
+                            else
+                            {
+                                Logger.Warning($"Steam3 session is null, cannot get app name for {appId}.");
+                                appErrors.Add("Steam3 session is null, cannot get app name.");
+                            }
                         }
-                        catch (Exception ex)
+                        catch (Exception nameEx)
                         {
-                            appErrors.Add($"Failed to get app name: {ex.Message}");
-                            Logger.Warning($"Failed to get app name for {appId}: {ex.Message}");
+                            appErrors.Add($"Failed to get app name: {nameEx.Message}");
+                            Logger.Warning($"Failed to get app name for {appId}: {nameEx.Message}");
                         }
-
-                        // Start tracking this app
                         StatisticsTracker.TrackAppStart(appId, appName);
-
-                        await DepotDumper.DumpAppAsync(select, appId).ConfigureAwait(false);
-                        appSuccess = true;
-                        Console.WriteLine($"Finished processing for app ID: {appId}");
-                        Logger.Info($"Finished processing for app ID: {appId}");
+                        if (DepotDumper.steam3 != null)
+                        {
+                            await DepotDumper.DumpAppAsync(select, appId).ConfigureAwait(false);
+                            appSuccess = true;
+                        }
+                        else
+                        {
+                            Logger.Error($"Steam3 session is null, cannot dump app {appId}.");
+                            appErrors.Add("Steam3 session is null, cannot dump app.");
+                            appSuccess = false;
+                        }
+                        TimeSpan duration = DateTime.Now - startTime;
+                        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Finished processing for AppID: {appId}. Duration: {duration.TotalSeconds:F2}s. Success: {appSuccess}");
+                        Logger.Info($"Finished processing for AppID: {appId}. Duration: {duration.TotalSeconds:F2}s. Success: {appSuccess}");
                     }
                     catch (DepotDumperException ddEx)
                     {
                         appErrors.Add(ddEx.Message);
-                        Logger.Error($"Error processing app ID {appId}: {ddEx.Message}");
-                        Console.WriteLine($"Error processing app ID {appId}: {ddEx.Message}");
+                        Logger.Error($"Error processing AppID {appId}: {ddEx.Message}");
+                        Console.WriteLine($"Error processing AppID {appId}: {ddEx.Message}");
                         appSuccess = false;
                     }
                     catch (OperationCanceledException ocEx)
                     {
-                        appErrors.Add(ocEx.Message);
-                        Logger.Error($"Operation Canceled processing app ID {appId}: {ocEx.Message}");
-                        Console.WriteLine($"Operation Canceled processing app ID {appId}: {ocEx.Message}");
+                        appErrors.Add($"Operation Canceled: {ocEx.Message}");
+                        Logger.Error($"Operation Canceled processing AppID {appId}: {ocEx.Message}");
+                        Console.WriteLine($"Operation Canceled processing AppID {appId}: {ocEx.Message}");
                         appSuccess = false;
                     }
                     catch (Exception ex)
                     {
-                        appErrors.Add(ex.ToString());
-                        Logger.Error($"Unexpected error processing app ID {appId}: {ex.ToString()}");
-                        Console.WriteLine($"Unexpected error processing app ID {appId}: {ex.Message}");
+                        appErrors.Add($"Unexpected error: {ex.ToString()}");
+                        Logger.Error($"Unexpected error processing AppID {appId}: {ex.ToString()}");
+                        Console.WriteLine($"Unexpected error processing AppID {appId}: {ex.Message}");
                         appSuccess = false;
                     }
                     finally
                     {
-                        // Track app completion with success status and any errors that occurred
                         StatisticsTracker.TrackAppCompletion(appId, appSuccess, appErrors.Count > 0 ? appErrors : null);
-
                         results.TryAdd(appId, appSuccess);
                         semaphore.Release();
                     }
                 }));
             }
-
             await Task.WhenAll(tasks);
-
             int successCount = results.Count(r => r.Value);
             int failedCount = appIds.Count - successCount;
             Console.WriteLine($"-------------------------------------------");
             Console.WriteLine($"Batch processing complete. Processed {successCount} app(s) successfully, {failedCount} failed.");
             Logger.Info($"Batch processing complete. Processed {successCount} app(s) successfully, {failedCount} failed.");
         }
-
         static List<T> GetParameterList<T>(string[] args, string param)
         {
             var list = new List<T>();
             var index = IndexOfParam(args, param);
             if (index == -1 || index == (args.Length - 1)) return list;
-
             index++;
             while (index < args.Length)
             {
                 var strParam = args[index];
                 if (strParam.StartsWith("-")) break;
-
                 var converter = TypeDescriptor.GetConverter(typeof(T));
-                if (converter != null)
+                if (converter != null && converter.CanConvertFrom(typeof(string)))
                 {
                     try { list.Add((T)converter.ConvertFromString(strParam)); }
                     catch (Exception ex)
@@ -518,11 +520,14 @@ namespace DepotDumper
                         Logger.Warning($"Could not parse value '{strParam}' for multi-value parameter '{param}' as {typeof(T).Name}. Skipping value. Error: {ex.Message}");
                     }
                 }
+                else
+                {
+                    Logger.Warning($"No converter found to parse value '{strParam}' for multi-value parameter '{param}' as {typeof(T).Name}. Skipping value.");
+                }
                 index++;
             }
             return list;
         }
-
         static void PrintUsage()
         {
             Console.WriteLine();
@@ -544,7 +549,7 @@ namespace DepotDumper
             Console.WriteLine("\t-select               \t- Interactively select depots to dump for each app.");
             Console.WriteLine();
             Console.WriteLine("Configuration & Output Options:");
-            Console.WriteLine("\t-config <path>        \t- Use configuration from the specified JSON file.");
+            Console.WriteLine("\t-config <path>        \t- Use configuration from the specified JSON file (Default: config.json).");
             Console.WriteLine("\t-save-config          \t- Save current command-line/config settings back to the config file.");
             Console.WriteLine("\t-dir <path>           \t- Directory to dump depots into (Default: 'dumps'). Also -dump-directory.");
             Console.WriteLine("\t-log-level <level>    \t- Set logging detail (debug, info, warning, error, critical. Default: info).");
@@ -564,15 +569,17 @@ namespace DepotDumper
             Console.WriteLine("\tconfig                \t- Enter configuration utility mode (e.g., DepotDumper config).");
             Console.WriteLine();
             Console.WriteLine("Note: When started with double-click (no arguments), DepotDumper will use settings from 'config.json'");
+            Console.WriteLine("      located in the same directory as the executable.");
         }
-
         static void PrintVersion(bool printExtra = false)
         {
             var assembly = typeof(Program).Assembly;
-            var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? assembly.GetName().Version.ToString();
+            var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? assembly.GetName().Version?.ToString() ?? "Unknown";
             Console.WriteLine($"DepotDumper v{version}");
             if (!printExtra) return;
             Console.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription} on {RuntimeInformation.OSDescription}");
+            Console.WriteLine($"OS Architecture: {RuntimeInformation.OSArchitecture}");
+            Console.WriteLine($"Process Architecture: {RuntimeInformation.ProcessArchitecture}");
         }
     }
 }
