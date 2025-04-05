@@ -1,17 +1,23 @@
+# .github/workflows/dotnet-build.yml
+
 name: DepotDumperMorrenusEdition
 
 on:
   push:
-    branches: [ "master" ] # Or your default branch (e.g., master)
-  pull_request:
-    branches: [ "master" ] # Or your default branch (e.g., master)
+    tags:
+      - 'v*.*.*' # Trigger workflow only on pushing tags like v1.0.0, v1.2.3, etc.
+  workflow_dispatch: # Allows manual triggering from the Actions tab
+
+# Add permissions for creating releases and uploading assets
+permissions:
+  contents: write
 
 jobs:
-  build:
-    runs-on: windows-latest # Use Windows runner due to potential platform dependencies
+  build-and-release: # Combined job name
+    runs-on: windows-latest # Still using Windows runner
 
     steps:
-    # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+    # Checks-out your repository under $GITHUB_WORKSPACE
     - name: Checkout repository
       uses: actions/checkout@v4
 
@@ -19,28 +25,34 @@ jobs:
     - name: Setup .NET 9.0
       uses: actions/setup-dotnet@v4
       with:
-        # Ensure this version supports .NET 9.0 or use a specific SDK version if needed
-        dotnet-version: '9.0.x' 
+        dotnet-version: '9.0.x'
 
     # Restores dependencies for the project
     - name: Restore dependencies
       run: dotnet restore "DepotDumper/DepotDumper.csproj"
-      # Use the relative path to your .csproj file from the root of the repository
 
     # Builds the project in Release configuration
     - name: Build project
       run: dotnet build "DepotDumper/DepotDumper.csproj" --configuration Release --no-restore
-      # Use the relative path to your .csproj file
 
-    # --- Optional Steps ---
+    # Package the application output into a ZIP file
+    - name: Package application for release
+      # This uses PowerShell's Compress-Archive, suitable for Windows runner
+      # Adjust the -Path if your output files are different or in subfolders you want to include
+      run: Compress-Archive -Path DepotDumper/bin/Release/net9.0/* -DestinationPath DepotDumper-${{ github.ref_name }}.zip
+      # The output zip will be named like DepotDumper-v1.0.0.zip based on the tag
 
-    # If you add unit tests later, uncomment this section
-    # - name: Run Tests
-    #   run: dotnet test --no-build --verbosity normal # Add path to test project if needed
-
-    # Example: Upload build artifacts (adjust path/pattern as needed)
-    # - name: Upload artifact
-    #   uses: actions/upload-artifact@v4
-    #   with:
-    #     name: depot-dumper-build
-    #     path: DepotDumper/bin/Release/net9.0/ # Path to the output directory
+    # Create GitHub Release and upload the package
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2 # Use v2 or latest stable version
+      # This action requires the GITHUB_TOKEN secret, which is automatically available
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }} # Use the tag name that triggered the workflow
+        name: Release ${{ github.ref_name }} # Name the release using the tag
+        body: | # Optional: Add release notes here. You could generate these dynamically in a previous step.
+          Release notes for ${{ github.ref_name }}
+        draft: false # Set to true if you want to manually publish the release later
+        prerelease: false # Set to true if this is a pre-release
+        files: DepotDumper-${{ github.ref_name }}.zip # Path to the ZIP file created in the previous step
