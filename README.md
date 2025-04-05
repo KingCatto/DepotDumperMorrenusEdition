@@ -1,3 +1,5 @@
+# Credits
+https://github.com/SteamAutoCracks/DepotDumper for the code he did then the credits he gave to the people before that.
 # DepotDumper
 
 A Steam depot key and manifest dumping utility utilizing the SteamKit2 library. This tool helps archive and extract Steam depots' encryption keys and manifests, which can be useful for game preservation and research purposes.
