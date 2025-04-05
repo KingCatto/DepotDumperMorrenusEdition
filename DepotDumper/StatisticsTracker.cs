@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
+
 namespace DepotDumper
 {
     public static class StatisticsTracker
@@ -21,6 +22,7 @@ namespace DepotDumper
         private static int newManifests = 0;
         private static int skippedManifests = 0;
         private static int failedManifests = 0;
+
         public static void Initialize()
         {
             lock (Lock)
@@ -29,8 +31,8 @@ namespace DepotDumper
                 {
                     StartTime = DateTime.Now
                 };
-                appSummaries.Clear();
-                depotSummaries.Clear();
+                appSummaries = new ConcurrentDictionary<uint, AppProcessingSummary>();
+                depotSummaries = new ConcurrentDictionary<uint, DepotProcessingSummary>();
                 errors = new ConcurrentBag<string>();
                 totalApps = 0;
                 successfulApps = 0;
@@ -45,151 +47,192 @@ namespace DepotDumper
                 Logger.Info("Statistics tracking initialized");
             }
         }
+
         public static void TrackAppStart(uint appId, string appName, DateTime? lastUpdated = null)
         {
-            Interlocked.Increment(ref totalApps);
-            var summary = new AppProcessingSummary
+            lock (Lock)
             {
-                AppId = appId,
-                AppName = appName ?? $"App {appId}",
-                LastUpdated = lastUpdated
-            };
-            appSummaries[appId] = summary;
-            Logger.Debug($"Started tracking app {appId} ({appName})");
+                Interlocked.Increment(ref totalApps);
+                var summary = new AppProcessingSummary
+                {
+                    AppId = appId,
+                    AppName = appName ?? $"App {appId}",
+                    LastUpdated = lastUpdated
+                };
+                appSummaries[appId] = summary;
+                Logger.Debug($"Started tracking app {appId} ({appName})");
+            }
         }
+
         public static void TrackAppCompletion(uint appId, bool success, List<string> appErrors = null)
         {
-            if (appSummaries.TryGetValue(appId, out var summary))
+            lock (Lock)
             {
-                if (appErrors != null)
+                if (appSummaries.TryGetValue(appId, out var summary))
                 {
-                    summary.AppErrors.AddRange(appErrors);
-                    foreach (var error in appErrors)
+                    summary.Success = success; // Explicitly set success flag
+                    
+                    if (appErrors != null)
                     {
-                        errors.Add($"App {appId}: {error}");
+                        summary.AppErrors.AddRange(appErrors);
+                        foreach (var error in appErrors)
+                        {
+                            errors.Add($"App {appId}: {error}");
+                        }
                     }
-                }
-                if (success)
-                {
-                    Interlocked.Increment(ref successfulApps);
-                    Logger.Info($"App {appId} ({summary.AppName}) processed successfully");
-                }
-                else
-                {
-                    Interlocked.Increment(ref failedApps);
-                    Logger.Warning($"App {appId} ({summary.AppName}) processing failed");
+                    
+                    if (success)
+                    {
+                        Interlocked.Increment(ref successfulApps);
+                        Logger.Info($"App {appId} ({summary.AppName}) processed successfully");
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref failedApps);
+                        Logger.Warning($"App {appId} ({summary.AppName}) processing failed");
+                    }
                 }
             }
         }
+
         public static void TrackDepotStart(uint depotId, uint appId, int manifestCount = 0)
         {
-            Interlocked.Increment(ref totalDepots);
-            var summary = new DepotProcessingSummary
+            lock (Lock)
             {
-                DepotId = depotId,
-                AppId = appId,
-                ManifestsFound = manifestCount
-            };
-            depotSummaries[depotId] = summary;
-            if (appSummaries.TryGetValue(appId, out var appSummary))
-            {
-                appSummary.TotalDepots++;
-                appSummary.DepotSummaries.Add(summary);
+                Interlocked.Increment(ref totalDepots);
+                var summary = new DepotProcessingSummary
+                {
+                    DepotId = depotId,
+                    AppId = appId,
+                    ManifestsFound = manifestCount
+                };
+                depotSummaries[depotId] = summary;
+                if (appSummaries.TryGetValue(appId, out var appSummary))
+                {
+                    appSummary.TotalDepots++;
+                    appSummary.DepotSummaries.Add(summary);
+                }
+                Logger.Debug($"Started tracking depot {depotId} for app {appId} with {manifestCount} manifests");
             }
-            Logger.Debug($"Started tracking depot {depotId} for app {appId} with {manifestCount} manifests");
         }
+
         public static void TrackDepotCompletion(uint depotId, bool success, List<string> depotErrors = null)
         {
-            if (depotSummaries.TryGetValue(depotId, out var summary))
+            lock (Lock)
             {
-                if (depotErrors != null)
+                if (depotSummaries.TryGetValue(depotId, out var summary))
                 {
-                    summary.DepotErrors.AddRange(depotErrors);
-                    foreach (var error in depotErrors)
+                    summary.Success = success; // Explicitly set success flag
+                    
+                    if (depotErrors != null)
                     {
-                        errors.Add($"Depot {depotId}: {error}");
+                        summary.DepotErrors.AddRange(depotErrors);
+                        foreach (var error in depotErrors)
+                        {
+                            errors.Add($"Depot {depotId}: {error}");
+                        }
+                    }
+                    
+                    if (success)
+                    {
+                        Interlocked.Increment(ref successfulDepots);
+                        Logger.Info($"Depot {depotId} processed successfully");
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref failedDepots);
+                        Logger.Warning($"Depot {depotId} processing failed");
+                    }
+                    
+                    if (appSummaries.TryGetValue(summary.AppId, out var appSummary))
+                    {
+                        appSummary.ProcessedDepots++;
                     }
                 }
-                if (success)
-                {
-                    Interlocked.Increment(ref successfulDepots);
-                    Logger.Info($"Depot {depotId} processed successfully");
-                }
-                else
-                {
-                    Interlocked.Increment(ref failedDepots);
-                    Logger.Warning($"Depot {depotId} processing failed");
-                }
-                if (appSummaries.TryGetValue(summary.AppId, out var appSummary))
-                {
-                    appSummary.ProcessedDepots++;
-                }
             }
         }
+
         public static void TrackDepotSkipped(uint depotId, uint appId, string reason)
         {
-            if (appSummaries.TryGetValue(appId, out var appSummary))
+            lock (Lock)
             {
-                appSummary.SkippedDepots++;
-                Logger.Debug($"Skipped depot {depotId} for app {appId}: {reason}");
+                if (appSummaries.TryGetValue(appId, out var appSummary))
+                {
+                    appSummary.SkippedDepots++;
+                    Logger.Debug($"Skipped depot {depotId} for app {appId}: {reason}");
+                }
             }
         }
+
         public static void TrackManifestProcessing(uint depotId, ulong manifestId, string branch,
             bool downloaded, bool skipped, string filePath = null, DateTime? lastUpdated = null, List<string> manifestErrors = null)
         {
-            Interlocked.Increment(ref totalManifests);
-            if (downloaded)
-                Interlocked.Increment(ref newManifests);
-            if (skipped)
-                Interlocked.Increment(ref skippedManifests);
-            if (manifestErrors != null && manifestErrors.Count > 0)
-                Interlocked.Increment(ref failedManifests);
-            var manifestSummary = new ManifestSummary
+            lock (Lock)
             {
-                DepotId = depotId,
-                ManifestId = manifestId,
-                Branch = branch,
-                WasDownloaded = downloaded,
-                WasSkipped = skipped,
-                FilePath = filePath,
-                LastUpdated = lastUpdated,
-                ManifestErrors = manifestErrors ?? new List<string>()
-            };
-            if (depotSummaries.TryGetValue(depotId, out var depotSummary))
-            {
-                depotSummary.Manifests.Add(manifestSummary);
+                Interlocked.Increment(ref totalManifests);
                 if (downloaded)
-                    depotSummary.ManifestsDownloaded++;
+                    Interlocked.Increment(ref newManifests);
                 if (skipped)
-                    depotSummary.ManifestsSkipped++;
-                if (appSummaries.TryGetValue(depotSummary.AppId, out var appSummary))
+                    Interlocked.Increment(ref skippedManifests);
+                if (manifestErrors != null && manifestErrors.Count > 0)
+                    Interlocked.Increment(ref failedManifests);
+                
+                var manifestSummary = new ManifestSummary
                 {
-                    appSummary.TotalManifests++;
+                    DepotId = depotId,
+                    ManifestId = manifestId,
+                    Branch = branch,
+                    WasDownloaded = downloaded,
+                    WasSkipped = skipped,
+                    FilePath = filePath,
+                    LastUpdated = lastUpdated,
+                    ManifestErrors = manifestErrors ?? new List<string>()
+                };
+                
+                if (depotSummaries.TryGetValue(depotId, out var depotSummary))
+                {
+                    depotSummary.Manifests.Add(manifestSummary);
                     if (downloaded)
-                        appSummary.NewManifests++;
+                        depotSummary.ManifestsDownloaded++;
                     if (skipped)
-                        appSummary.SkippedManifests++;
+                        depotSummary.ManifestsSkipped++;
+                    
+                    if (appSummaries.TryGetValue(depotSummary.AppId, out var appSummary))
+                    {
+                        appSummary.TotalManifests++;
+                        if (downloaded)
+                            appSummary.NewManifests++;
+                        if (skipped)
+                            appSummary.SkippedManifests++;
+                    }
                 }
-            }
-            if (manifestErrors != null)
-            {
-                foreach (var error in manifestErrors)
+                
+                if (manifestErrors != null)
                 {
-                    errors.Add($"Manifest {depotId}_{manifestId} ({branch}): {error}");
+                    foreach (var error in manifestErrors)
+                    {
+                        errors.Add($"Manifest {depotId}_{manifestId} ({branch}): {error}");
+                    }
                 }
+                
+                if (downloaded)
+                    Logger.Info($"Downloaded manifest {manifestId} for depot {depotId} (branch: {branch})");
+                else if (skipped)
+                    Logger.Debug($"Skipped manifest {manifestId} for depot {depotId} (branch: {branch})");
+                else if (manifestErrors != null && manifestErrors.Count > 0)
+                    Logger.Error($"Failed to process manifest {manifestId} for depot {depotId} (branch: {branch})");
             }
-            if (downloaded)
-                Logger.Info($"Downloaded manifest {manifestId} for depot {depotId} (branch: {branch})");
-            else if (skipped)
-                Logger.Debug($"Skipped manifest {manifestId} for depot {depotId} (branch: {branch})");
-            else if (manifestErrors != null && manifestErrors.Count > 0)
-                Logger.Error($"Failed to process manifest {manifestId} for depot {depotId} (branch: {branch})");
         }
+
         public static void TrackError(string error)
         {
-            errors.Add(error);
-            Logger.Error(error);
+            lock (Lock)
+            {
+                errors.Add(error);
+                Logger.Error(error);
+            }
         }
+
         public static OperationSummary GetSummary()
         {
             lock (Lock)
@@ -207,14 +250,17 @@ namespace DepotDumper
                 currentSummary.FailedManifests = failedManifests;
                 currentSummary.AppSummaries = new List<AppProcessingSummary>(appSummaries.Values);
                 currentSummary.ProcessedAppIds = new List<string>();
+                
                 foreach (var app in appSummaries.Values)
                 {
                     currentSummary.ProcessedAppIds.Add(app.AppId.ToString());
                 }
+                
                 currentSummary.Errors = new List<string>(errors);
                 return currentSummary;
             }
         }
+
         public static void PrintSummary()
         {
             var summary = GetSummary();
@@ -230,6 +276,7 @@ namespace DepotDumper
             }
             Console.WriteLine("========================");
         }
+
         private static string FormatTimeSpan(TimeSpan span)
         {
             if (span.TotalDays >= 1)

@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Text;
+
 namespace DepotDumper
 {
     public static class HtmlReportGenerator
@@ -295,7 +296,7 @@ namespace DepotDumper
             sb.AppendLine("    <div class=\"container\">");
             sb.AppendLine("        <header>");
             sb.AppendLine("            <h1>DepotDumper Operation Report</h1>");
-            sb.AppendLine($"            <div class=\"timestamp\">Generated on {DateTime.Now:MMMM d, yyyy} at {DateTime.Now:h:mm:ss tt}</div>");
+            sb.AppendLine($"            <div class=\"timestamp\">Generated on {DateTime.Now:MMMM d, yyyy} at {DateTime.Now:h:mm:ss tt}</div>"); // Corrected ordinal format
             sb.AppendLine("        </header>");
             sb.AppendLine("        <div class=\"card\">");
             sb.AppendLine("            <div class=\"card-header\">");
@@ -394,8 +395,10 @@ namespace DepotDumper
             sb.AppendLine("                    <tbody>");
             foreach (var app in summary.AppSummaries)
             {
-                string statusClass = app.Success ? "status-success" : "status-failed";
-                string statusText = app.Success ? "Success" : "Failed";
+                // Corrected Line 397: Use ComputedSuccess
+                string statusClass = app.ComputedSuccess ? "status-success" : "status-failed";
+                // Corrected Line 398: Use ComputedSuccess
+                string statusText = app.ComputedSuccess ? "Success" : "Failed";
                 sb.AppendLine("                        <tr>");
                 sb.AppendLine($"                            <td>{app.AppId}</td>");
                 sb.AppendLine($"                            <td>{HtmlEncode(app.AppName)}</td>");
@@ -422,8 +425,10 @@ namespace DepotDumper
                     sb.AppendLine("                                    <tbody>");
                     foreach (var depot in app.DepotSummaries)
                     {
-                        string depotStatusClass = depot.Success ? "status-success" : "status-failed";
-                        string depotStatusText = depot.Success ? "Success" : "Failed";
+                        // Corrected Line 425: Use ComputedSuccess
+                        string depotStatusClass = depot.ComputedSuccess ? "status-success" : "status-failed";
+                        // Corrected Line 426: Use ComputedSuccess
+                        string depotStatusText = depot.ComputedSuccess ? "Success" : "Failed";
                         sb.AppendLine("                                        <tr>");
                         sb.AppendLine($"                                            <td>{depot.DepotId}</td>");
                         sb.AppendLine($"                                            <td>{depot.ManifestsFound}</td>");
@@ -470,6 +475,7 @@ namespace DepotDumper
                 foreach (var group in errorGroups)
                 {
                     sb.AppendLine($"                        <li><strong>{group.Key}:</strong> {group.Count()} occurrences</li>");
+                    // Show a few examples per group
                     foreach (var error in group.Take(3))
                     {
                         sb.AppendLine($"                        <li style=\"margin-left: 20px; font-size: 12px;\">{HtmlEncode(error)}</li>");
@@ -491,12 +497,17 @@ namespace DepotDumper
             sb.AppendLine("    </div>");
             sb.AppendLine("</body>");
             sb.AppendLine("</html>");
+
             return sb.ToString();
         }
+
+        // Helper to encode text for HTML display
         private static string HtmlEncode(string text)
         {
             if (string.IsNullOrEmpty(text))
                 return string.Empty;
+
+            // Basic HTML encoding
             return text
                 .Replace("&", "&amp;")
                 .Replace("<", "&lt;")
@@ -504,22 +515,40 @@ namespace DepotDumper
                 .Replace("\"", "&quot;")
                 .Replace("'", "&#39;");
         }
+
+        // Helper function to categorize errors based on keywords
         private static string GetErrorType(string errorMessage)
         {
             if (string.IsNullOrEmpty(errorMessage))
                 return "Unknown";
-            if (errorMessage.Contains("connection") || errorMessage.Contains("network") || errorMessage.Contains("timeout"))
+
+            if (errorMessage.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
+                errorMessage.Contains("network", StringComparison.OrdinalIgnoreCase) ||
+                errorMessage.Contains("timeout", StringComparison.OrdinalIgnoreCase))
                 return "Network Error";
-            if (errorMessage.Contains("file") && (errorMessage.Contains("not found") || errorMessage.Contains("access") || errorMessage.Contains("permission")))
+
+            if (errorMessage.Contains("file", StringComparison.OrdinalIgnoreCase) &&
+                (errorMessage.Contains("not found", StringComparison.OrdinalIgnoreCase) ||
+                 errorMessage.Contains("access", StringComparison.OrdinalIgnoreCase) ||
+                 errorMessage.Contains("permission", StringComparison.OrdinalIgnoreCase)))
                 return "File Access Error";
-            if (errorMessage.Contains("manifest") && errorMessage.Contains("download"))
+
+            if (errorMessage.Contains("manifest", StringComparison.OrdinalIgnoreCase) &&
+                errorMessage.Contains("download", StringComparison.OrdinalIgnoreCase))
                 return "Manifest Download Error";
-            if (errorMessage.Contains("key") || errorMessage.Contains("authentication") || errorMessage.Contains("login"))
+
+            if (errorMessage.Contains("key", StringComparison.OrdinalIgnoreCase) ||
+                errorMessage.Contains("authentication", StringComparison.OrdinalIgnoreCase) ||
+                errorMessage.Contains("login", StringComparison.OrdinalIgnoreCase))
                 return "Authentication Error";
-            if (errorMessage.Contains("database"))
+
+            if (errorMessage.Contains("database", StringComparison.OrdinalIgnoreCase))
                 return "Database Error";
+
             return "Other Error";
         }
+
+        // Helper function to format TimeSpan nicely
         private static string FormatTimeSpan(TimeSpan span)
         {
             if (span.TotalDays >= 1)
@@ -528,7 +557,7 @@ namespace DepotDumper
                 return $"{span.Hours}h {span.Minutes}m {span.Seconds}s";
             if (span.TotalMinutes >= 1)
                 return $"{span.Minutes}m {span.Seconds}s";
-            return $"{span.Seconds}.{span.Milliseconds / 10}s";
+            return $"{span.Seconds}.{span.Milliseconds / 10}s"; // Show tenths of a second
         }
     }
 }

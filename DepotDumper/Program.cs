@@ -61,6 +61,9 @@ namespace DepotDumper
             string configPathArg = null;
             ConfigFile config = null;
 
+            // Initialize statistics tracking early
+            StatisticsTracker.Initialize();
+
             bool isDoubleClick = args.Length == 0;
             if (isDoubleClick)
             {
@@ -123,7 +126,9 @@ namespace DepotDumper
             string logFilePath = Path.Combine(logsDirectory, $"depotdumper_{DateTime.Now:yyyyMMdd_HHmmss}.log");
             Logger.Initialize(logFilePath, logLevel);
 
+            // Re-initialize statistics tracker after logging is set up
             StatisticsTracker.Initialize();
+
             if (HasParameter(args, "-debug") || logLevel == LogLevel.Debug)
             {
                 PrintVersion(true);
@@ -205,7 +210,31 @@ namespace DepotDumper
                     else if (specificAppId != DepotDumper.INVALID_APP_ID)
                     {
                         Logger.Info($"Processing specific AppID: {specificAppId}");
+
+                        // Track the app start before processing
+                        string appName = "Unknown App";
+                        List<string> appErrors = new List<string>();
+                        try
+                        {
+                            await DepotDumper.steam3?.RequestAppInfo(specificAppId);
+                            appName = DepotDumper.GetAppName(specificAppId);
+                            if (string.IsNullOrEmpty(appName)) appName = $"Unknown App {specificAppId}";
+                        }
+                        catch (Exception ex)
+                        {
+                            appErrors.Add($"Failed to get app name: {ex.Message}");
+                            Logger.Warning($"Failed to get app name for {specificAppId}: {ex.Message}");
+                        }
+
+                        // Start tracking this app
+                        StatisticsTracker.TrackAppStart(specificAppId, appName);
+
+                        // Process the app
                         await DepotDumper.DumpAppAsync(select, specificAppId).ConfigureAwait(false);
+
+                        // Mark app as successfully completed
+                        StatisticsTracker.TrackAppCompletion(specificAppId, true, appErrors.Count > 0 ? appErrors : null);
+
                         success = true;
                     }
                     else
@@ -223,14 +252,41 @@ namespace DepotDumper
                 }
                 catch (DepotDumperException ddEx)
                 {
-                    Logger.Error(ddEx.Message); Console.WriteLine(ddEx.Message); exitCode = 1; success = false;
+                    // Track failure if processing a specific app
+                    if (specificAppId != DepotDumper.INVALID_APP_ID)
+                    {
+                        StatisticsTracker.TrackAppCompletion(specificAppId, false, new List<string> { ddEx.Message });
+                    }
+                    StatisticsTracker.TrackError(ddEx.Message);
+
+                    Logger.Error(ddEx.Message);
+                    Console.WriteLine(ddEx.Message);
+                    exitCode = 1;
+                    success = false;
                 }
                 catch (OperationCanceledException ocEx)
                 {
-                    Logger.Error($"Operation Canceled: {ocEx.Message}"); Console.WriteLine($"Operation Canceled: {ocEx.Message}"); exitCode = 1; success = false;
+                    // Track failure if processing a specific app
+                    if (specificAppId != DepotDumper.INVALID_APP_ID)
+                    {
+                        StatisticsTracker.TrackAppCompletion(specificAppId, false, new List<string> { ocEx.Message });
+                    }
+                    StatisticsTracker.TrackError($"Operation Canceled: {ocEx.Message}");
+
+                    Logger.Error($"Operation Canceled: {ocEx.Message}");
+                    Console.WriteLine($"Operation Canceled: {ocEx.Message}");
+                    exitCode = 1;
+                    success = false;
                 }
                 catch (Exception e)
                 {
+                    // Track failure if processing a specific app
+                    if (specificAppId != DepotDumper.INVALID_APP_ID)
+                    {
+                        StatisticsTracker.TrackAppCompletion(specificAppId, false, new List<string> { e.ToString() });
+                    }
+                    StatisticsTracker.TrackError($"Unhandled exception: {e.Message}");
+
                     Logger.Critical($"Unhandled exception during processing: {e.ToString()}");
                     Console.WriteLine($"Download failed due to an unhandled exception: {e.Message}");
                     exitCode = 1;
@@ -242,9 +298,13 @@ namespace DepotDumper
                     {
                         try
                         {
+                            // Print statistics summary to console
                             StatisticsTracker.PrintSummary();
+
+                            // Get a summary for the reports
                             var summary = StatisticsTracker.GetSummary();
                             ReportGenerator.SaveAllReports(summary, reportsDirectory);
+
                             Logger.Info($"Reports generated successfully in {reportsDirectory}");
                             Console.WriteLine($"Reports generated successfully in {reportsDirectory}");
                         }
@@ -260,6 +320,9 @@ namespace DepotDumper
             }
             else
             {
+                // Track Steam initialization failure
+                StatisticsTracker.TrackError("Steam initialization failed");
+
                 Logger.Critical("Error: Steam initialization failed.");
                 Console.WriteLine("Error: InitializeSteam failed");
                 exitCode = 1;
@@ -362,11 +425,30 @@ namespace DepotDumper
                 tasks.Add(Task.Run(async () =>
                 {
                     bool appSuccess = false;
+                    List<string> appErrors = new List<string>();
+
                     try
                     {
                         Console.WriteLine($"-------------------------------------------");
                         Console.WriteLine($"Starting processing for app ID: {appId}");
                         Logger.Info($"Starting processing for app ID: {appId}");
+
+                        // Get app name for tracking
+                        string appName = "Unknown App";
+                        try
+                        {
+                            await DepotDumper.steam3?.RequestAppInfo(appId);
+                            appName = DepotDumper.GetAppName(appId);
+                            if (string.IsNullOrEmpty(appName)) appName = $"Unknown App {appId}";
+                        }
+                        catch (Exception ex)
+                        {
+                            appErrors.Add($"Failed to get app name: {ex.Message}");
+                            Logger.Warning($"Failed to get app name for {appId}: {ex.Message}");
+                        }
+
+                        // Start tracking this app
+                        StatisticsTracker.TrackAppStart(appId, appName);
 
                         await DepotDumper.DumpAppAsync(select, appId).ConfigureAwait(false);
                         appSuccess = true;
@@ -375,20 +457,30 @@ namespace DepotDumper
                     }
                     catch (DepotDumperException ddEx)
                     {
-                        Logger.Error($"Error processing app ID {appId}: {ddEx.Message}"); Console.WriteLine($"Error processing app ID {appId}: {ddEx.Message}"); appSuccess = false;
+                        appErrors.Add(ddEx.Message);
+                        Logger.Error($"Error processing app ID {appId}: {ddEx.Message}");
+                        Console.WriteLine($"Error processing app ID {appId}: {ddEx.Message}");
+                        appSuccess = false;
                     }
                     catch (OperationCanceledException ocEx)
                     {
-                        Logger.Error($"Operation Canceled processing app ID {appId}: {ocEx.Message}"); Console.WriteLine($"Operation Canceled processing app ID {appId}: {ocEx.Message}"); appSuccess = false;
+                        appErrors.Add(ocEx.Message);
+                        Logger.Error($"Operation Canceled processing app ID {appId}: {ocEx.Message}");
+                        Console.WriteLine($"Operation Canceled processing app ID {appId}: {ocEx.Message}");
+                        appSuccess = false;
                     }
                     catch (Exception ex)
                     {
+                        appErrors.Add(ex.ToString());
                         Logger.Error($"Unexpected error processing app ID {appId}: {ex.ToString()}");
                         Console.WriteLine($"Unexpected error processing app ID {appId}: {ex.Message}");
                         appSuccess = false;
                     }
                     finally
                     {
+                        // Track app completion with success status and any errors that occurred
+                        StatisticsTracker.TrackAppCompletion(appId, appSuccess, appErrors.Count > 0 ? appErrors : null);
+
                         results.TryAdd(appId, appSuccess);
                         semaphore.Release();
                     }
@@ -473,6 +565,7 @@ namespace DepotDumper
             Console.WriteLine();
             Console.WriteLine("Note: When started with double-click (no arguments), DepotDumper will use settings from 'config.json'");
         }
+
         static void PrintVersion(bool printExtra = false)
         {
             var assembly = typeof(Program).Assembly;

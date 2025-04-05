@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+
 namespace DepotDumper
 {
     public class OperationSummary
@@ -21,6 +22,7 @@ namespace DepotDumper
         public List<AppProcessingSummary> AppSummaries { get; set; } = new List<AppProcessingSummary>();
         public List<string> Errors { get; set; } = new List<string>();
     }
+    
     public class AppProcessingSummary
     {
         public uint AppId { get; set; }
@@ -34,8 +36,14 @@ namespace DepotDumper
         public int SkippedManifests { get; set; }
         public List<string> AppErrors { get; set; } = new List<string>();
         public List<DepotProcessingSummary> DepotSummaries { get; set; } = new List<DepotProcessingSummary>();
-        public bool Success => AppErrors.Count == 0 && ProcessedDepots == TotalDepots - SkippedDepots;
+        
+        // Changed to nullable bool with explicit setter instead of a computed property
+        public bool? Success { get; set; }
+        
+        // Keep the computed property for backward compatibility, but prioritize the explicit setting
+        public bool ComputedSuccess => Success ?? (AppErrors.Count == 0 && ProcessedDepots == TotalDepots - SkippedDepots);
     }
+    
     public class DepotProcessingSummary
     {
         public uint DepotId { get; set; }
@@ -45,8 +53,14 @@ namespace DepotDumper
         public int ManifestsSkipped { get; set; }
         public List<string> DepotErrors { get; set; } = new List<string>();
         public List<ManifestSummary> Manifests { get; set; } = new List<ManifestSummary>();
-        public bool Success => DepotErrors.Count == 0;
+        
+        // Changed to nullable bool with explicit setter instead of a computed property
+        public bool? Success { get; set; }
+        
+        // Keep the computed property for backward compatibility, but prioritize the explicit setting
+        public bool ComputedSuccess => Success ?? (DepotErrors.Count == 0);
     }
+    
     public class ManifestSummary
     {
         public uint DepotId { get; set; }
@@ -57,6 +71,11 @@ namespace DepotDumper
         public string FilePath { get; set; }
         public DateTime? LastUpdated { get; set; }
         public List<string> ManifestErrors { get; set; } = new List<string>();
-        public bool Success => ManifestErrors.Count == 0 && (WasDownloaded || WasSkipped);
+        
+        // Changed to nullable bool with explicit setter instead of a computed property
+        public bool? Success { get; set; }
+        
+        // Keep the computed property for backward compatibility, but prioritize the explicit setting
+        public bool ComputedSuccess => Success ?? (ManifestErrors.Count == 0 && (WasDownloaded || WasSkipped));
     }
 }

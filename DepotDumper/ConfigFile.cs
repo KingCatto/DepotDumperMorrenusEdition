@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Reflection; 
-using System.Linq; 
+using System.Reflection;
+using System.Linq;
 namespace DepotDumper
 {
     public class ConfigFile
@@ -17,7 +17,7 @@ namespace DepotDumper
         public int MaxDownloads { get; set; } = 4;
         public int MaxServers { get; set; } = 20;
         public uint? LoginID { get; set; } = null;
-        public string DumpDirectory { get; set; } = "dumps"; 
+        public string DumpDirectory { get; set; } = "dumps";
         public bool UseNewNamingFormat { get; set; } = true;
         public int MaxConcurrentApps { get; set; } = 1;
         public HashSet<uint> AppIdsToProcess { get; set; } = new HashSet<uint>();
@@ -35,28 +35,26 @@ namespace DepotDumper
                 return result;
             }
         }
-        
         private static readonly string DefaultConfigPath = Path.Combine(
-            AppContext.BaseDirectory, 
+            AppContext.BaseDirectory,
             "config.json");
-            
         public static ConfigFile Load()
         {
             return Load(DefaultConfigPath);
         }
-        
         public static ConfigFile Load(string path)
         {
             try
             {
-                if (string.IsNullOrEmpty(path)) {
+                if (string.IsNullOrEmpty(path))
+                {
                     Logger.Warning("Configuration load path was null or empty, using default in-memory config.");
                     return new ConfigFile();
                 }
                 if (!File.Exists(path))
                 {
                     Logger.Info($"Configuration file not found at '{path}'. Using default settings.");
-                    return new ConfigFile(); 
+                    return new ConfigFile();
                 }
                 Logger.Info($"Loading configuration from '{path}'.");
                 string json = File.ReadAllText(path);
@@ -66,28 +64,28 @@ namespace DepotDumper
                     AllowTrailingCommas = true,
                     PropertyNameCaseInsensitive = true
                 };
-                if (string.IsNullOrWhiteSpace(json)) {
+                if (string.IsNullOrWhiteSpace(json))
+                {
                     Logger.Warning($"Configuration file at '{path}' is empty. Using default settings.");
                     return new ConfigFile();
                 }
                 return JsonSerializer.Deserialize<ConfigFile>(json, options) ?? new ConfigFile();
             }
-            catch (JsonException jsonEx) {
+            catch (JsonException jsonEx)
+            {
                 Logger.Error($"Error parsing configuration file '{path}': {jsonEx.Message}. Using default settings.");
                 return new ConfigFile();
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error loading configuration file '{path}': {ex.Message}. Using default settings.");
-                return new ConfigFile(); 
+                return new ConfigFile();
             }
         }
-        
         public void Save()
         {
             Save(DefaultConfigPath);
         }
-        
         public void Save(string path)
         {
             if (string.IsNullOrEmpty(path))
@@ -95,7 +93,6 @@ namespace DepotDumper
                 string errorMessage = "Error saving configuration: The provided save path was null or empty.";
                 Console.WriteLine(errorMessage);
                 Logger.Error(errorMessage);
-                
                 if (!string.IsNullOrEmpty(DefaultConfigPath))
                 {
                     path = DefaultConfigPath;
@@ -106,7 +103,6 @@ namespace DepotDumper
                     return;
                 }
             }
-            
             try
             {
                 string directoryPath = Path.GetDirectoryName(path);
@@ -132,10 +128,9 @@ namespace DepotDumper
                 Logger.Error($"{errorMessage} - StackTrace: {ex.StackTrace}");
             }
         }
-        
         public void ApplyToDepotDumperConfig()
         {
-            DepotDumper.Config ??= new DumpConfig(); 
+            DepotDumper.Config ??= new DumpConfig();
             DepotDumper.Config.RememberPassword = this.RememberPassword;
             DepotDumper.Config.UseQrCode = this.UseQrCode;
             DepotDumper.Config.CellID = this.CellID;
@@ -145,7 +140,6 @@ namespace DepotDumper
             DepotDumper.Config.DumpDirectory = this.DumpDirectory;
             DepotDumper.Config.UseNewNamingFormat = this.UseNewNamingFormat;
         }
-        
         public void MergeCommandLineParameters(string[] args)
         {
             if (Program.HasParameter(args, "-username") || Program.HasParameter(args, "-user"))

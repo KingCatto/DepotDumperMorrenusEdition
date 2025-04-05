@@ -37,6 +37,7 @@ x64/
 *.vspscc
 *.vssscc
 .builds
+.editorconfig
 
 # Visual C++ cache files
 ipch/
@@ -118,3 +119,7 @@ cryptopp/
 
 # misc
 Thumbs.db
+.editorconfig
+.vscode/settings.json
+.editorconfig
+.editorconfig

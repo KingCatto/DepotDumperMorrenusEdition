@@ -674,11 +674,74 @@ namespace DepotDumper
             // Encode the link as a QR code
             using var qrGenerator = new QRCodeGenerator();
             var qrCodeData = qrGenerator.CreateQrCode(challengeUrl, QRCodeGenerator.ECCLevel.L);
-            using var qrCode = new AsciiQRCode(qrCodeData);
-            var qrCodeAsAsciiArt = qrCode.GetGraphic(1, drawQuietZones: false);
 
+            // Define custom characters for better terminal compatibility
+            char darkBlock = '█'; // Full block
+            char lightBlock = ' '; // Space
+            int moduleSize = 2; // Make QR code blocks bigger
+            bool drawQuietZones = true; // Include quiet zones for better scanning
+
+            // Instead of using AsciiQRCode, we'll generate our own ASCII representation
+            int size = qrCodeData.ModuleMatrix.Count;
+
+            Console.WriteLine();
             Console.WriteLine("Use the Steam Mobile App to sign in with this QR code:");
-            Console.WriteLine(qrCodeAsAsciiArt);
+            Console.WriteLine();
+
+            // Print top quiet zone if enabled
+            if (drawQuietZones)
+            {
+                for (int i = 0; i < size + 8; i++)
+                {
+                    Console.Write(lightBlock);
+                }
+                Console.WriteLine();
+            }
+
+            // Print each row of the QR code
+            for (int y = 0; y < size; y++)
+            {
+                // Print left quiet zone
+                if (drawQuietZones)
+                {
+                    Console.Write(lightBlock + lightBlock + lightBlock + lightBlock);
+                }
+
+                // Print QR code modules
+                for (int x = 0; x < size; x++)
+                {
+                    char blockChar = qrCodeData.ModuleMatrix[y][x] ? darkBlock : lightBlock;
+
+                    // Print each module multiple times to make it more square-like
+                    for (int i = 0; i < moduleSize; i++)
+                    {
+                        Console.Write(blockChar);
+                    }
+                }
+
+                // Print right quiet zone
+                if (drawQuietZones)
+                {
+                    Console.Write(lightBlock + lightBlock + lightBlock + lightBlock);
+                }
+
+                Console.WriteLine();
+            }
+
+            // Print bottom quiet zone if enabled
+            if (drawQuietZones)
+            {
+                for (int i = 0; i < size + 8; i++)
+                {
+                    Console.Write(lightBlock);
+                }
+                Console.WriteLine();
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("If the QR code doesn't display properly in your terminal, try using Windows Terminal");
+            Console.WriteLine("or a terminal with better Unicode support.");
+            Console.WriteLine();
         }
     }
 }
