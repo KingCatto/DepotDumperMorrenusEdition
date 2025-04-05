@@ -1,16 +1,11 @@
-// This file is subject to the terms and conditions defined
-// in file 'LICENSE', which is part of this source code package.
-
 using System;
 using System.Diagnostics.Tracing;
 using System.Text;
-
 namespace DepotDumper
 {
     internal sealed class HttpDiagnosticEventListener : EventListener
     {
         public const EventKeywords TasksFlowActivityIds = (EventKeywords)0x80;
-
         protected override void OnEventSourceCreated(EventSource eventSource)
         {
             if (eventSource.Name == "System.Net.Http" ||
@@ -25,7 +20,6 @@ namespace DepotDumper
                 EnableEvents(eventSource, EventLevel.LogAlways, TasksFlowActivityIds);
             }
         }
-
         protected override void OnEventWritten(EventWrittenEventArgs eventData)
         {
             var sb = new StringBuilder().Append($"{eventData.TimeStamp:HH:mm:ss.fffffff}  {eventData.EventSource.Name}.{eventData.EventName}(");
@@ -37,7 +31,6 @@ namespace DepotDumper
                     sb.Append(", ");
                 }
             }
-
             sb.Append(')');
             Console.WriteLine(sb.ToString());
         }

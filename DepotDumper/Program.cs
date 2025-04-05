@@ -1,14 +1,14 @@
-// This file is subject to the terms and conditions defined
-// in file 'LICENSE', which is part of this source code package.
-
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Media;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using SteamKit2;
 using SteamKit2.CDN;
@@ -17,207 +17,417 @@ namespace DepotDumper
 {
     class Program
     {
-        static async Task<int> Main(string[] args)
-        {
-            if (args.Length == 0)
-            {
-                PrintVersion();
-                PrintUsage();
-
-                if (OperatingSystem.IsWindowsVersionAtLeast(5, 0))
-                {
-                    PlatformUtilities.VerifyConsoleLaunch();
-                }
-
-                return 0;
-            }
-
-            Ansi.Init();
-
-            DebugLog.Enabled = false;
-
-            AccountSettingsStore.LoadFromFile("account.config");
-
-            #region Common Options
-
-            // Not using HasParameter because it is case insensitive
-            if (args.Length == 1 && (args[0] == "-V" || args[0] == "--version"))
-            {
-                PrintVersion(true);
-                return 0;
-            }
-
-            if (HasParameter(args, "-debug"))
-            {
-                PrintVersion(true);
-
-                DebugLog.Enabled = true;
-                DebugLog.AddListener((category, message) =>
-                {
-                    Console.WriteLine("[{0}] {1}", category, message);
-                });
-
-                var httpEventListener = new HttpDiagnosticEventListener();
-            }
-
-            var username = GetParameter<string>(args, "-username") ?? GetParameter<string>(args, "-user");
-            var password = GetParameter<string>(args, "-password") ?? GetParameter<string>(args, "-pass");
-
-            DepotDumper.Config.RememberPassword = HasParameter(args, "-remember-password");
-            DepotDumper.Config.UseQrCode = HasParameter(args, "-qr");
-
-            if (username == null)
-            {
-                if (DepotDumper.Config.RememberPassword)
-                {
-                    Console.WriteLine("Error: -remember-password can not be used without -username.");
-                    return 1;
-                }
-
-                if (DepotDumper.Config.UseQrCode)
-                {
-                    Console.WriteLine("Error: -qr can not be used without -username.");
-                    return 1;
-                }
-            }
-
-            var cellId = GetParameter(args, "-cellid", -1);
-            if (cellId == -1)
-            {
-                cellId = 0;
-            }
-
-            DepotDumper.Config.CellID = cellId;
-
-            DepotDumper.Config.MaxServers = GetParameter(args, "-max-servers", 20);
-
-            DepotDumper.Config.LoginID = HasParameter(args, "-loginid") ? GetParameter<uint>(args, "-loginid") : null;
-
-            #endregion
-
-            if (InitializeSteam(username, password))
-            {
-                try
-                {
-                    bool select = HasParameter(args, "-select");
-                    await DepotDumper.DumpAppAsync(select).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (
-                   ex is DepotDumperException
-                   || ex is OperationCanceledException)
-                {
-                    Console.WriteLine(ex.Message);
-                    return 1;
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine("Download failed to due to an unhandled exception: {0}", e.Message);
-                    throw;
-                }
-                finally
-                {
-                    DepotDumper.ShutdownSteam3();
-                }
-            }
-            else
-            {
-                Console.WriteLine("Error: InitializeSteam failed");
-                return 1;
-            }
-            
-            return 0;
-        }
-
-        static bool InitializeSteam(string username, string password)
-        {
-            if (!DepotDumper.Config.UseQrCode)
-            {
-                if (username != null && password == null && (!DepotDumper.Config.RememberPassword || !AccountSettingsStore.Instance.LoginTokens.ContainsKey(username)))
-                {
-                    do
-                    {
-                        Console.Write("Enter account password for \"{0}\": ", username);
-                        if (Console.IsInputRedirected)
-                        {
-                            password = Console.ReadLine();
-                        }
-                        else
-                        {
-                            // Avoid console echoing of password
-                            password = Util.ReadPassword();
-                        }
-
-                        Console.WriteLine();
-                    } while (string.Empty == password);
-                }
-                else if (username == null)
-                {
-                    Console.WriteLine("No username given. Using anonymous account with dedicated server subscription.");
-                }
-            }
-
-            return DepotDumper.InitializeSteam3(username, password);
-        }
-
-        static int IndexOfParam(string[] args, string param)
+        public static int IndexOfParam(string[] args, string param)
         {
             for (var x = 0; x < args.Length; ++x)
             {
                 if (args[x].Equals(param, StringComparison.OrdinalIgnoreCase))
                     return x;
             }
-
             return -1;
         }
 
-        static bool HasParameter(string[] args, string param)
+        public static bool HasParameter(string[] args, string param)
         {
             return IndexOfParam(args, param) > -1;
         }
 
-        static T GetParameter<T>(string[] args, string param, T defaultValue = default)
+        public static T GetParameter<T>(string[] args, string param, T defaultValue = default)
         {
             var index = IndexOfParam(args, param);
-
             if (index == -1 || index == (args.Length - 1))
                 return defaultValue;
 
             var strParam = args[index + 1];
-
             var converter = TypeDescriptor.GetConverter(typeof(T));
             if (converter != null)
             {
-                return (T)converter.ConvertFromString(strParam);
+                try
+                {
+                    return (T)converter.ConvertFromString(strParam);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Could not parse parameter '{param}' value '{strParam}' as {typeof(T).Name}. Using default. Error: {ex.Message}");
+                    Logger.Warning($"Could not parse parameter '{param}' value '{strParam}' as {typeof(T).Name}. Using default. Error: {ex.Message}");
+                    return defaultValue;
+                }
+            }
+            return default;
+        }
+
+        static async Task<int> Main(string[] args)
+        {
+            string configPathArg = null;
+            ConfigFile config = null;
+
+            bool isDoubleClick = args.Length == 0;
+            if (isDoubleClick)
+            {
+                Console.WriteLine("DepotDumper started via double-click...");
+                string configPath = "config.json";
+                config = ConfigFile.Load(configPath);
+                config.ApplyToDepotDumperConfig();
+                args = new[] { "-config", configPath, "-generate-reports" };
+                Console.WriteLine($"Loading configuration from: {configPath}");
+                Console.WriteLine("Output will be saved to reports directory.");
+                Console.WriteLine();
             }
 
-            return default;
+            if (args.Length > 0 && (args[0] == "-V" || args[0] == "--version"))
+            {
+                PrintVersion(true);
+                if (isDoubleClick) { Console.WriteLine("\nPress any key to exit..."); Console.ReadKey(); }
+                return 0;
+            }
+
+            if (args.Length >= 1 && args[0].ToLower() == "config")
+            {
+                int result = ConfigCommand.Run(args);
+                if (isDoubleClick) { Console.WriteLine("\nPress any key to exit..."); Console.ReadKey(); }
+                return result;
+            }
+
+            if (HasParameter(args, "-config"))
+            {
+                configPathArg = GetParameter<string>(args, "-config");
+            }
+            config = configPathArg != null ? ConfigFile.Load(configPathArg) : ConfigFile.Load();
+            config.MergeCommandLineParameters(args);
+
+            Ansi.Init();
+            DebugLog.Enabled = false;
+            AccountSettingsStore.LoadFromFile("account.config");
+
+            bool generateReports = HasParameter(args, "-generate-reports") || isDoubleClick;
+            string dumpPath = string.IsNullOrWhiteSpace(DepotDumper.Config.DumpDirectory) ? DepotDumper.DEFAULT_DUMP_DIR : DepotDumper.Config.DumpDirectory;
+            string reportsDirectory = GetParameter<string>(args, "-reports-dir") ?? Path.Combine(dumpPath, "reports");
+            string logsDirectory = GetParameter<string>(args, "-logs-dir") ?? Path.Combine(dumpPath, "logs");
+            LogLevel logLevel = LogLevel.Info;
+
+            if (HasParameter(args, "-log-level"))
+            {
+                string levelStr = GetParameter<string>(args, "-log-level", "info").ToLower();
+                switch (levelStr)
+                {
+                    case "debug": logLevel = LogLevel.Debug; break;
+                    case "info": logLevel = LogLevel.Info; break;
+                    case "warning": logLevel = LogLevel.Warning; break;
+                    case "error": logLevel = LogLevel.Error; break;
+                    case "critical": logLevel = LogLevel.Critical; break;
+                    default: logLevel = LogLevel.Info; break;
+                }
+            }
+
+            Directory.CreateDirectory(logsDirectory);
+            string logFilePath = Path.Combine(logsDirectory, $"depotdumper_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+            Logger.Initialize(logFilePath, logLevel);
+
+            StatisticsTracker.Initialize();
+            if (HasParameter(args, "-debug") || logLevel == LogLevel.Debug)
+            {
+                PrintVersion(true);
+                DebugLog.Enabled = true;
+                DebugLog.AddListener((category, message) => { Console.WriteLine("[{0}] {1}", category, message); });
+                Logger.Info("Debug logging enabled.");
+            }
+
+            bool saveConfig = HasParameter(args, "-save-config");
+            var username = config.Username;
+            var password = config.Password;
+            uint specificAppId = GetParameter(args, "-appid", DepotDumper.INVALID_APP_ID);
+            string appIdsFilePath = GetParameter<string>(args, "-appids-file");
+            List<uint> appIdsList = new List<uint>();
+
+            if (!string.IsNullOrEmpty(appIdsFilePath))
+            {
+                if (!File.Exists(appIdsFilePath))
+                {
+                    Logger.Error($"Error: App IDs file not found: {appIdsFilePath}");
+                    Console.WriteLine($"Error: App IDs file not found: {appIdsFilePath}");
+                    if (isDoubleClick) { Console.WriteLine("\nPress any key to exit..."); Console.ReadKey(); }
+                    return 1;
+                }
+                try
+                {
+                    string[] lines = File.ReadAllLines(appIdsFilePath);
+                    foreach (string line in lines)
+                    {
+                        string trimmed = line.Trim();
+                        if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith("#")) continue;
+                        if (uint.TryParse(trimmed, out uint appId)) appIdsList.Add(appId);
+                        else Logger.Warning($"Warning: Invalid app ID format in file: '{trimmed}'");
+                    }
+                    if (appIdsList.Count == 0) { Logger.Error("Error: No valid app IDs found in the file."); Console.WriteLine("Error: No valid app IDs found in the file."); if (isDoubleClick) { /* Wait */ } return 1; }
+                    Logger.Info($"Loaded {appIdsList.Count} app IDs from file: {appIdsFilePath}");
+                    Console.WriteLine($"Loaded {appIdsList.Count} app IDs from file: {appIdsFilePath}");
+                }
+                catch (Exception ex) { Logger.Error($"Error reading app IDs file: {ex.Message}"); Console.WriteLine($"Error reading app IDs file: {ex.Message}"); if (isDoubleClick) { /* Wait */ } return 1; }
+            }
+            else if (specificAppId == DepotDumper.INVALID_APP_ID && config.AppIdsToProcess.Count > 0)
+            {
+                appIdsList.AddRange(config.AppIdsToProcess.Where(id => !config.ExcludedAppIds.Contains(id)));
+                if (appIdsList.Count > 0)
+                {
+                    Logger.Info($"Loaded {appIdsList.Count} app IDs from configuration file.");
+                    Console.WriteLine($"Loaded {appIdsList.Count} app IDs from configuration file.");
+                    int excludedCount = config.AppIdsToProcess.Count - appIdsList.Count;
+                    if (excludedCount > 0)
+                    {
+                        Logger.Info($"Skipping {excludedCount} excluded app IDs from configuration.");
+                        Console.WriteLine($"Skipping {excludedCount} excluded app IDs from configuration.");
+                    }
+                }
+            }
+
+            if (specificAppId != DepotDumper.INVALID_APP_ID)
+            {
+                if (!config.AppIdsToProcess.Contains(specificAppId))
+                {
+                    config.AppIdsToProcess.Add(specificAppId);
+                }
+            }
+
+            int exitCode = 0;
+            bool success = false;
+            if (InitializeSteam(username, password, isDoubleClick))
+            {
+                try
+                {
+                    bool select = HasParameter(args, "-select");
+
+                    if (appIdsList.Count > 0)
+                    {
+                        Logger.Info($"Processing {appIdsList.Count} AppIDs from list.");
+                        await ProcessMultipleAppsAsync(appIdsList, select, dumpPath, config.MaxConcurrentApps);
+                        success = true;
+                    }
+                    else if (specificAppId != DepotDumper.INVALID_APP_ID)
+                    {
+                        Logger.Info($"Processing specific AppID: {specificAppId}");
+                        await DepotDumper.DumpAppAsync(select, specificAppId).ConfigureAwait(false);
+                        success = true;
+                    }
+                    else
+                    {
+                        Logger.Info("Processing all apps from licenses.");
+                        await DepotDumper.DumpAppAsync(select).ConfigureAwait(false);
+                        success = true;
+                    }
+
+                    if (saveConfig)
+                    {
+                        Logger.Info("Saving configuration as requested by -save-config flag.");
+                        config.Save();
+                    }
+                }
+                catch (DepotDumperException ddEx)
+                {
+                    Logger.Error(ddEx.Message); Console.WriteLine(ddEx.Message); exitCode = 1; success = false;
+                }
+                catch (OperationCanceledException ocEx)
+                {
+                    Logger.Error($"Operation Canceled: {ocEx.Message}"); Console.WriteLine($"Operation Canceled: {ocEx.Message}"); exitCode = 1; success = false;
+                }
+                catch (Exception e)
+                {
+                    Logger.Critical($"Unhandled exception during processing: {e.ToString()}");
+                    Console.WriteLine($"Download failed due to an unhandled exception: {e.Message}");
+                    exitCode = 1;
+                    success = false;
+                }
+                finally
+                {
+                    if (generateReports)
+                    {
+                        try
+                        {
+                            StatisticsTracker.PrintSummary();
+                            var summary = StatisticsTracker.GetSummary();
+                            ReportGenerator.SaveAllReports(summary, reportsDirectory);
+                            Logger.Info($"Reports generated successfully in {reportsDirectory}");
+                            Console.WriteLine($"Reports generated successfully in {reportsDirectory}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error($"Failed to generate reports: {ex.Message}");
+                            Console.WriteLine($"Failed to generate reports: {ex.Message}");
+                        }
+                    }
+                    DepotDumper.ShutdownSteam3();
+                    if (isDoubleClick) { PlayCompletionSound(success); }
+                }
+            }
+            else
+            {
+                Logger.Critical("Error: Steam initialization failed.");
+                Console.WriteLine("Error: InitializeSteam failed");
+                exitCode = 1;
+            }
+
+            if (isDoubleClick)
+            {
+                Console.WriteLine("\nProcessing finished. Press any key to exit...");
+                Console.ReadKey();
+            }
+
+            return exitCode;
+        }
+
+        private static void PlayCompletionSound(bool success)
+        {
+            try
+            {
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    using (var player = new SoundPlayer())
+                    {
+                        string successSound = @"C:\Windows\Media\tada.wav";
+                        string failureSound = @"C:\Windows\Media\Windows Critical Stop.wav";
+                        string notifySound = @"C:\Windows\Media\Windows Notify.wav";
+                        string exclamationSound = @"C:\Windows\Media\Windows Exclamation.wav";
+
+                        string soundFile = success ? successSound : failureSound;
+
+                        if (!File.Exists(soundFile))
+                        {
+                            soundFile = success ? notifySound : exclamationSound;
+                        }
+
+                        if (File.Exists(soundFile))
+                        {
+                            player.SoundLocation = soundFile;
+                            player.Play();
+                            Logger.Debug($"Played sound: {soundFile}");
+                        }
+                        else
+                        {
+                            Logger.Warning($"Could not find sound file to play: {soundFile}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Logger.Warning($"Failed to play completion sound: {ex.Message}"); }
+        }
+
+        static bool InitializeSteam(string username, string password, bool isDoubleClick = false)
+        {
+            if (!DepotDumper.Config.UseQrCode)
+            {
+                bool needPassword = username != null && password == null && (!DepotDumper.Config.RememberPassword || !AccountSettingsStore.Instance.LoginTokens.ContainsKey(username));
+                if (needPassword)
+                {
+                    do
+                    {
+                        Console.Write("Enter account password for \"{0}\": ", username);
+                        password = Console.IsInputRedirected ? Console.ReadLine() : Util.ReadPassword();
+                        Console.WriteLine();
+                    } while (string.IsNullOrEmpty(password));
+                }
+                else if (username == null)
+                {
+                    Logger.Info("No username given. Using anonymous account.");
+                    Console.WriteLine("No username given. Using anonymous account.");
+                }
+            }
+
+            bool result = DepotDumper.InitializeSteam3(username, password);
+
+            if (!result && isDoubleClick)
+            {
+                Logger.Error("Failed to initialize Steam. Please check your configuration or credentials.");
+                Console.WriteLine("Failed to initialize Steam. Please check your configuration or credentials.");
+            }
+            else if (!result)
+            {
+                Logger.Error("Failed to initialize Steam.");
+            }
+
+            return result;
+        }
+
+        static async Task ProcessMultipleAppsAsync(List<uint> appIds, bool select, string dumpPath, int maxConcurrent)
+        {
+            if (maxConcurrent <= 0) maxConcurrent = 1;
+            Console.WriteLine($"Processing {appIds.Count} app IDs with concurrency level: {maxConcurrent}");
+            Logger.Info($"Processing {appIds.Count} app IDs with concurrency level: {maxConcurrent}");
+
+            using var semaphore = new SemaphoreSlim(maxConcurrent);
+            var tasks = new List<Task>();
+            var results = new ConcurrentDictionary<uint, bool>();
+
+            foreach (uint appId in appIds)
+            {
+                await semaphore.WaitAsync();
+                tasks.Add(Task.Run(async () =>
+                {
+                    bool appSuccess = false;
+                    try
+                    {
+                        Console.WriteLine($"-------------------------------------------");
+                        Console.WriteLine($"Starting processing for app ID: {appId}");
+                        Logger.Info($"Starting processing for app ID: {appId}");
+
+                        await DepotDumper.DumpAppAsync(select, appId).ConfigureAwait(false);
+                        appSuccess = true;
+                        Console.WriteLine($"Finished processing for app ID: {appId}");
+                        Logger.Info($"Finished processing for app ID: {appId}");
+                    }
+                    catch (DepotDumperException ddEx)
+                    {
+                        Logger.Error($"Error processing app ID {appId}: {ddEx.Message}"); Console.WriteLine($"Error processing app ID {appId}: {ddEx.Message}"); appSuccess = false;
+                    }
+                    catch (OperationCanceledException ocEx)
+                    {
+                        Logger.Error($"Operation Canceled processing app ID {appId}: {ocEx.Message}"); Console.WriteLine($"Operation Canceled processing app ID {appId}: {ocEx.Message}"); appSuccess = false;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"Unexpected error processing app ID {appId}: {ex.ToString()}");
+                        Console.WriteLine($"Unexpected error processing app ID {appId}: {ex.Message}");
+                        appSuccess = false;
+                    }
+                    finally
+                    {
+                        results.TryAdd(appId, appSuccess);
+                        semaphore.Release();
+                    }
+                }));
+            }
+
+            await Task.WhenAll(tasks);
+
+            int successCount = results.Count(r => r.Value);
+            int failedCount = appIds.Count - successCount;
+            Console.WriteLine($"-------------------------------------------");
+            Console.WriteLine($"Batch processing complete. Processed {successCount} app(s) successfully, {failedCount} failed.");
+            Logger.Info($"Batch processing complete. Processed {successCount} app(s) successfully, {failedCount} failed.");
         }
 
         static List<T> GetParameterList<T>(string[] args, string param)
         {
             var list = new List<T>();
             var index = IndexOfParam(args, param);
-
-            if (index == -1 || index == (args.Length - 1))
-                return list;
+            if (index == -1 || index == (args.Length - 1)) return list;
 
             index++;
-
             while (index < args.Length)
             {
                 var strParam = args[index];
-
-                if (strParam[0] == '-') break;
+                if (strParam.StartsWith("-")) break;
 
                 var converter = TypeDescriptor.GetConverter(typeof(T));
                 if (converter != null)
                 {
-                    list.Add((T)converter.ConvertFromString(strParam));
+                    try { list.Add((T)converter.ConvertFromString(strParam)); }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Warning: Could not parse value '{strParam}' for multi-value parameter '{param}' as {typeof(T).Name}. Skipping value. Error: {ex.Message}");
+                        Logger.Warning($"Could not parse value '{strParam}' for multi-value parameter '{param}' as {typeof(T).Name}. Skipping value. Error: {ex.Message}");
+                    }
                 }
-
                 index++;
             }
-
             return list;
         }
 
@@ -225,25 +435,50 @@ namespace DepotDumper
         {
             Console.WriteLine();
             Console.WriteLine("Usage - dumping all depots key in steam account:");
-            Console.WriteLine("\tDepotDumper -username <username> -password <password>");
-            Console.WriteLine("\t-username <user>\t\t- the username of the account to dump keys.");
-            Console.WriteLine("\t-password <pass>\t\t- the password of the account to dump keys.");
-            Console.WriteLine("\t-remember-password\t\t- if set, remember the password for subsequent logins of this user. (Use -username <username> -remember-password as login credentials)");
-            Console.WriteLine("\t-loginid <#>\t\t- a unique 32-bit integer Steam LogonID in decimal, required if running multiple instances of DepotDumper concurrently.");
-            Console.WriteLine("\t-select \t\t- select depot to dump key.");
-            Console.WriteLine("\t-qr \t\t Use QR code to login.");
+            Console.WriteLine("\tDepotDumper -username <username> -password <password> [options]");
+            Console.WriteLine();
+            Console.WriteLine("Required Account Options:");
+            Console.WriteLine("\t-username <user>      \t- Your Steam username.");
+            Console.WriteLine("\t-password <pass>      \t- Your Steam password. Not needed if using QR or remember-password.");
+            Console.WriteLine();
+            Console.WriteLine("Optional Login Options:");
+            Console.WriteLine("\t-qr                   \t- Use QR code for login via Steam Mobile App.");
+            Console.WriteLine("\t-remember-password    \t- Remember password/token for subsequent logins (stored locally).");
+            Console.WriteLine("\t-loginid <#>          \t- Unique 32-bit ID if running multiple instances concurrently.");
+            Console.WriteLine();
+            Console.WriteLine("Dumping Options:");
+            Console.WriteLine("\t-appid <#>            \t- Dump ONLY depots for this specific App ID.");
+            Console.WriteLine("\t-appids-file <path>   \t- Dump ONLY depots for App IDs listed in the specified file (one per line).");
+            Console.WriteLine("\t-select               \t- Interactively select depots to dump for each app.");
+            Console.WriteLine();
+            Console.WriteLine("Configuration & Output Options:");
+            Console.WriteLine("\t-config <path>        \t- Use configuration from the specified JSON file.");
+            Console.WriteLine("\t-save-config          \t- Save current command-line/config settings back to the config file.");
+            Console.WriteLine("\t-dir <path>           \t- Directory to dump depots into (Default: 'dumps'). Also -dump-directory.");
+            Console.WriteLine("\t-log-level <level>    \t- Set logging detail (debug, info, warning, error, critical. Default: info).");
+            Console.WriteLine("\t-logs-dir <path>      \t- Directory to store log files (Default: dumps/logs).");
+            Console.WriteLine("\t-generate-reports     \t- Generate HTML, JSON, CSV, TXT reports after completion.");
+            Console.WriteLine("\t-reports-dir <path>   \t- Directory to store reports (Default: dumps/reports).");
+            Console.WriteLine();
+            Console.WriteLine("Performance Options:");
+            Console.WriteLine("\t-max-downloads <#>    \t- Max concurrent manifest downloads per depot (Default: 4).");
+            Console.WriteLine("\t-max-servers <#>      \t- Max CDN servers to use (Default: 20).");
+            Console.WriteLine("\t-max-concurrent-apps <#>\t- Max apps to process concurrently if using -appids-file or config (Default: 1).");
+            Console.WriteLine("\t-cellid <#>           \t- Specify Cell ID for connection (Default: Auto).");
+            Console.WriteLine();
+            Console.WriteLine("Other Options:");
+            Console.WriteLine("\t-debug                \t- Enable verbose debug messages.");
+            Console.WriteLine("\t-V | --version        \t- Show version information.");
+            Console.WriteLine("\tconfig                \t- Enter configuration utility mode (e.g., DepotDumper config).");
+            Console.WriteLine();
+            Console.WriteLine("Note: When started with double-click (no arguments), DepotDumper will use settings from 'config.json'");
         }
-
         static void PrintVersion(bool printExtra = false)
         {
-            var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>().InformationalVersion;
+            var assembly = typeof(Program).Assembly;
+            var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? assembly.GetName().Version.ToString();
             Console.WriteLine($"DepotDumper v{version}");
-
-            if (!printExtra)
-            {
-                return;
-            }
-
+            if (!printExtra) return;
             Console.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription} on {RuntimeInformation.OSDescription}");
         }
     }
