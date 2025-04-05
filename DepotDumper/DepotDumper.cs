@@ -268,19 +268,19 @@ namespace DepotDumper
 
             if (manifestsEncrypted != KeyValue.Invalid)
             {
-                 foreach (var encryptedBranch in manifestsEncrypted.Children)
-                 {
+                foreach (var encryptedBranch in manifestsEncrypted.Children)
+                {
                     var branch = encryptedBranch.Name;
                     if (encryptedBranch["gid"] != KeyValue.Invalid)
                     {
-                         Logger.Info($"Found encrypted manifest for depot {depotId} in branch '{branch}'");
-                         Console.Write($"Attempt to get encrypted manifest from branch '{branch}'? (y/n): ");
-                         var response = Console.ReadLine()?.Trim().ToLowerInvariant();
-                         if (response == "y" || response == "yes")
-                         {
+                        Logger.Info($"Found encrypted manifest for depot {depotId} in branch '{branch}'");
+                        Console.Write($"Attempt to get encrypted manifest from branch '{branch}'? (y/n): ");
+                        var response = Console.ReadLine()?.Trim().ToLowerInvariant();
+                        if (response == "y" || response == "yes")
+                        {
                             ulong encryptedManifestId = await GetSteam3DepotManifestAsync(depotId, appId, branch);
                             if (encryptedManifestId != INVALID_MANIFEST_ID) { results.Add((encryptedManifestId, branch)); Logger.Debug($"Added encrypted manifest {encryptedManifestId} for branch '{branch}'"); }
-                         }
+                        }
                     }
                 }
             }
@@ -769,7 +769,8 @@ namespace DepotDumper
                     catch (SteamKitWebRequestException e)
                     {
                         if (e.StatusCode == HttpStatusCode.Forbidden && steam3 != null && !steam3.CDNAuthTokens.ContainsKey((depotId, connection.Host))) { await steam3.RequestCDNAuthToken(appId, depotId, connection); cdnPoolInstance.ReturnConnection(connection); connection = cdnPoolInstance.GetConnection(cts.Token); if (connection == null) { Logger.Warning("Could not re-establish CDN connection after auth token request."); break; } continue; }
-                        retryCount++; if (retryCount >= maxRetries) { Logger.Error($"Error downloading manifest {manifestId} after {maxRetries} retries: {e.Message}"); break; } Logger.Warning($"Download attempt {retryCount}/{maxRetries} failed: {e.Message}. Retrying after delay..."); await Task.Delay(backoffDelays[retryCount - 1]);
+                        retryCount++; if (retryCount >= maxRetries) { Logger.Error($"Error downloading manifest {manifestId} after {maxRetries} retries: {e.Message}"); break; }
+                        Logger.Warning($"Download attempt {retryCount}/{maxRetries} failed: {e.Message}. Retrying after delay..."); await Task.Delay(backoffDelays[retryCount - 1]);
                     }
                     catch (OperationCanceledException) { Logger.Warning($"Operation canceled downloading manifest {manifestId}."); break; }
                     catch (Exception e) { retryCount++; if (retryCount >= maxRetries) { Logger.Error($"Error downloading manifest {manifestId} after {maxRetries} retries: {e.ToString()}"); break; } Logger.Warning($"Retrying download {retryCount}/{maxRetries} due to error: {e.Message}. Retrying after delay..."); await Task.Delay(backoffDelays[retryCount - 1]); }
@@ -778,12 +779,53 @@ namespace DepotDumper
             }
             finally { if (connection != null) cdnPoolInstance.ReturnConnection(connection); cts.Dispose(); }
         }
-
-        static async Task DumpDepotAsync(uint depotId, uint appId, string path, Dictionary<(uint depotId, string branch), DateTime> manifestDates, DateTime? appLastUpdated = null, Dictionary<uint, string> appDlcInfo = null)
+        public static bool IsDlc(uint appId, out uint parentId)
         {
-            appDlcInfo ??= new Dictionary<uint, string>(); CDNClientPool currentCdnPool = null;
+            parentId = appId; // Default to self
+
             try
             {
+                string appPath = Path.Combine(Config.DumpDirectory ?? DEFAULT_DUMP_DIR, appId.ToString());
+                string dlcInfoPath = Path.Combine(appPath, $"{appId}.dlcinfo");
+
+                if (File.Exists(dlcInfoPath))
+                {
+                    string content = File.ReadAllText(dlcInfoPath);
+                    string[] parts = content.Split(';');
+
+                    if (parts.Length >= 3 && parts[2].StartsWith("DLC_For_"))
+                    {
+                        string parentIdStr = parts[2].Substring("DLC_For_".Length);
+                        if (uint.TryParse(parentIdStr, out uint result))
+                        {
+                            parentId = result;
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error reading DLC info file for {appId}: {ex.Message}");
+            }
+
+            return false;
+        }
+        static async Task DumpDepotAsync(uint depotId, uint appId, string path, Dictionary<(uint depotId, string branch), DateTime> manifestDates, DateTime? appLastUpdated = null, Dictionary<uint, string> appDlcInfo = null)
+        {
+            appDlcInfo ??= new Dictionary<uint, string>();
+            CDNClientPool currentCdnPool = null;
+
+            try
+            {
+                // Check if this is a DLC and get parent app ID
+                uint effectiveAppId = appId;
+                if (IsDlc(appId, out uint parentAppId) && parentAppId != appId)
+                {
+                    effectiveAppId = parentAppId;
+                    Logger.Info($"Using parent app {parentAppId} directory for DLC {appId} manifests");
+                }
+
                 currentCdnPool = new CDNClientPool(steam3, appId);
                 await steam3.RequestDepotKey(depotId, appId);
                 if (!steam3.DepotKeys.TryGetValue(depotId, out var depotKey))
@@ -796,38 +838,97 @@ namespace DepotDumper
                 Logger.Info($"Starting to process depot {depotId} for app context {appId}");
                 Console.WriteLine($"Starting to process depot {depotId} for app context {appId}");
                 string depotKeyHex = string.Concat(depotKey.Select(b => b.ToString("X2")).ToArray());
-                string appDumpPath = Path.Combine(path, appId.ToString());
+
+                // Use the effective app ID (parent app ID for DLCs) for paths
+                string appDumpPath = Path.Combine(path, effectiveAppId.ToString());
                 Directory.CreateDirectory(appDumpPath);
-                var keyFilePath = Path.Combine(appDumpPath, $"{appId.ToString()}.key");
+                var keyFilePath = Path.Combine(appDumpPath, $"{effectiveAppId.ToString()}.key");
+
                 bool keyExists = false;
-                if (File.Exists(keyFilePath)) { string linePrefix = $"{depotId};"; try { keyExists = File.ReadLines(keyFilePath).Any(line => line.TrimStart().StartsWith(linePrefix)); } catch (IOException ex) { Logger.Warning($"Could not read key file {keyFilePath}: {ex.Message}"); } }
-                if (!keyExists) { try { File.AppendAllText(keyFilePath, $"{depotId};{depotKeyHex}\n"); Console.WriteLine("Depot {0} key: {1}", depotId, depotKeyHex); Logger.Info($"Appended key for Depot {depotId} to {keyFilePath}"); } catch (IOException ex) { Logger.Error($"Could not write to key file {keyFilePath}: {ex.Message}"); } }
-                else { Console.WriteLine("Using existing depot {0} key", depotId); Logger.Debug($"Key for Depot {depotId} already exists in {keyFilePath}"); }
+                if (File.Exists(keyFilePath))
+                {
+                    string linePrefix = $"{depotId};";
+                    try
+                    {
+                        keyExists = File.ReadLines(keyFilePath).Any(line => line.TrimStart().StartsWith(linePrefix));
+                    }
+                    catch (IOException ex)
+                    {
+                        Logger.Warning($"Could not read key file {keyFilePath}: {ex.Message}");
+                    }
+                }
+
+                if (!keyExists)
+                {
+                    try
+                    {
+                        File.AppendAllText(keyFilePath, $"{depotId};{depotKeyHex}\n");
+                        Console.WriteLine("Depot {0} key: {1}", depotId, depotKeyHex);
+                        Logger.Info($"Appended key for Depot {depotId} to {keyFilePath}");
+                    }
+                    catch (IOException ex)
+                    {
+                        Logger.Error($"Could not write to key file {keyFilePath}: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("Using existing depot {0} key", depotId);
+                    Logger.Debug($"Key for Depot {depotId} already exists in {keyFilePath}");
+                }
+
                 if (manifestsToDump.Count == 0)
                 {
                     Console.WriteLine("No accessible manifests found for depot {0}.", depotId);
                     Logger.Warning($"No accessible manifests found for depot {depotId} (App Context: {appId}).");
                     return;
                 }
+
                 DateTime defaultDate = appLastUpdated ?? DateTime.Now;
                 int maxConcurrent = Config.MaxDownloads > 0 ? Config.MaxDownloads : 4;
                 Console.WriteLine($"Processing {manifestsToDump.Count} manifests for depot {depotId} with up to {maxConcurrent} at a time");
                 Logger.Info($"Processing {manifestsToDump.Count} manifests for depot {depotId} with up to {maxConcurrent} at a time");
+
                 var tasks = new List<Task>();
                 using var concurrencySemaphore = new SemaphoreSlim(maxConcurrent);
+
                 foreach (var (manifestId, branch) in manifestsToDump)
                 {
                     DateTime manifestDate = defaultDate;
-                    if (manifestDates != null && manifestDates.TryGetValue((depotId, branch), out DateTime specificDate)) { manifestDate = specificDate; }
+                    if (manifestDates != null && manifestDates.TryGetValue((depotId, branch), out DateTime specificDate))
+                    {
+                        manifestDate = specificDate;
+                    }
+
                     await concurrencySemaphore.WaitAsync();
-                    tasks.Add(Task.Run(async () => { try { await ProcessManifestIndividuallyAsync(depotId, appId, manifestId, branch, path, depotKeyHex, manifestDate, appDlcInfo, currentCdnPool); } finally { concurrencySemaphore.Release(); } }));
+
+                    // Pass the effective app ID to ensure DLC manifests go to parent app folder
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await ProcessManifestIndividuallyAsync(depotId, effectiveAppId, manifestId, branch, path, depotKeyHex, manifestDate, appDlcInfo, currentCdnPool);
+                        }
+                        finally
+                        {
+                            concurrencySemaphore.Release();
+                        }
+                    }));
                 }
+
                 await Task.WhenAll(tasks);
                 Console.WriteLine($"Completed processing all manifests for depot {depotId}");
                 Logger.Info($"Completed processing all manifests for depot {depotId}");
             }
-            catch (Exception e) { Console.WriteLine($"Error dumping depot {depotId}: {e.Message}"); Logger.Error($"Error dumping depot {depotId}: {e.ToString()}"); }
-            finally { currentCdnPool?.Shutdown(); }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Error dumping depot {depotId}: {e.Message}");
+                Logger.Error($"Error dumping depot {depotId}: {e.ToString()}");
+            }
+            finally
+            {
+                currentCdnPool?.Shutdown();
+            }
         }
 
         public static async Task DumpAppAsync(bool select, uint specificAppId = INVALID_APP_ID)
@@ -924,7 +1025,7 @@ namespace DepotDumper
                         if (appDlcInfo == null || appDlcInfo.Count == 0) Logger.Info($"No DLCs found or fetched for parent app {parentAppId}, skipping final Lua append step.");
                         if (processedBranches.Count == 0) Logger.Info($"No branches were processed for parent app {parentAppId}, skipping final Lua append step.");
                     }
-                    CreateZipsForApp(parentAppId, dumpPath, parentAppName);
+                    await CreateZipsForApp(parentAppId, dumpPath, parentAppName);
                     CleanupEmptyDirectories(dumpPath);
                 }
                 catch (Exception e) { Console.WriteLine("Error processing specific app {0}: {1}", specificAppId, e.Message); Logger.Error($"Error processing specific app {specificAppId}: {e.ToString()}"); }
@@ -1006,7 +1107,7 @@ namespace DepotDumper
                             if (appDlcInfo == null || appDlcInfo.Count == 0) Logger.Info($"No DLCs found or fetched for parent app {parentAppId}, skipping final Lua append step.");
                             if (processedBranches.Count == 0) Logger.Info($"No branches were processed for parent app {parentAppId}, skipping final Lua append step.");
                         }
-                        CreateZipsForApp(parentAppId, dumpPath, parentAppName);
+                        await CreateZipsForApp(parentAppId, dumpPath, parentAppName);
                         Logger.Info($"--- Processing Parent Group End: {parentAppId} ---");
                     }
                 }
@@ -1073,7 +1174,7 @@ namespace DepotDumper
             Logger.Info("Steam3 disconnected.");
         }
 
-        static void CreateZipsForApp(uint appId, string path, string appName)
+        static async Task CreateZipsForApp(uint appId, string path, string appName)
         {
             if (processedBranches.Count == 0)
             {
@@ -1081,22 +1182,110 @@ namespace DepotDumper
                 Logger.Info($"No branches processed for app {appId} ('{appName}'), skipping zip creation.");
                 return;
             }
+
             Console.WriteLine($"Creating zip archives for {processedBranches.Count} branches of app {appId} ('{appName}')");
             Logger.Info($"Creating zip archives for {processedBranches.Count} branches of app {appId} ('{appName}')");
 
-            string safeAppName = string.Join("_", appName.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+            string safeAppName = appName;
+            string appPath = Path.Combine(path, appId.ToString());
+            string infoFilePath = Path.Combine(appPath, $"{appId}.info");
+            string dlcInfoFilePath = Path.Combine(appPath, $"{appId}.dlcinfo");
+
+            try
+            {
+                if (File.Exists(infoFilePath))
+                {
+                    string infoContent = await File.ReadAllTextAsync(infoFilePath);
+                    string[] parts = infoContent.Split(';');
+                    if (parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[1]))
+                    {
+                        safeAppName = parts[1];
+                        Logger.Info($"Found app name from info file: {safeAppName}");
+                    }
+                }
+                else if (File.Exists(dlcInfoFilePath))
+                {
+                    string infoContent = await File.ReadAllTextAsync(dlcInfoFilePath);
+                    string[] parts = infoContent.Split(';');
+                    if (parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[1]))
+                    {
+                        safeAppName = parts[1];
+
+                        if (parts.Length >= 3 && parts[2].StartsWith("DLC_For_"))
+                        {
+                            string parentIdStr = parts[2].Substring("DLC_For_".Length);
+
+                            if (uint.TryParse(parentIdStr, out uint parentId))
+                            {
+                                string parentInfoPath = Path.Combine(path, parentId.ToString(), $"{parentId}.info");
+                                if (File.Exists(parentInfoPath))
+                                {
+                                    string parentInfo = await File.ReadAllTextAsync(parentInfoPath);
+                                    string[] parentParts = parentInfo.Split(';');
+                                    if (parentParts.Length >= 2 && !string.IsNullOrWhiteSpace(parentParts[1]))
+                                    {
+                                        safeAppName = $"{parentParts[1]} - {safeAppName}";
+                                        Logger.Info($"Using parent name for DLC: {safeAppName}");
+                                    }
+                                }
+                            }
+                        }
+
+                        Logger.Info($"Found app name from DLC info file: {safeAppName}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error reading info file for app {appId}: {ex.Message}. Using fallback name.");
+            }
+
+            if (string.IsNullOrWhiteSpace(safeAppName) || safeAppName == "Unknown_App" || safeAppName == appName)
+            {
+                try
+                {
+                    Logger.Info($"Falling back to Steam Store API for app {appId} name");
+                    var appDetails = await SteamStoreAPI.GetAppDetailsAsync(appId);
+                    if (!string.IsNullOrWhiteSpace(appDetails.Name))
+                    {
+                        safeAppName = appDetails.Name;
+
+                        if (appDetails.IsDlc && appDetails.ParentAppId.HasValue)
+                        {
+                            var parentDetails = await SteamStoreAPI.GetAppDetailsAsync(appDetails.ParentAppId.Value);
+                            if (parentDetails != null && !string.IsNullOrEmpty(parentDetails.Name))
+                            {
+                                safeAppName = $"{parentDetails.Name} - {safeAppName}";
+                                Logger.Info($"Using parent name for DLC from API: {safeAppName}");
+                            }
+                        }
+
+                        Logger.Info($"Successfully got app name from Steam Store API: {safeAppName}");
+                    }
+                }
+                catch (Exception apiEx)
+                {
+                    Logger.Warning($"Failed to get app name from API: {apiEx.Message}. Using original name.");
+                }
+            }
+
+            safeAppName = string.Join("_", safeAppName.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
             if (safeAppName.Length > 50) safeAppName = safeAppName.Substring(0, 50);
             safeAppName = safeAppName.Replace("__", "_").Trim('_');
             if (string.IsNullOrEmpty(safeAppName)) safeAppName = "Unknown_App";
 
-
+            // Use a different variable name in the loop to avoid conflict
             foreach (var branchName in processedBranches)
             {
                 try
                 {
-                    string appPath = Path.Combine(path, appId.ToString());
+                    // Use a different name for the path variable inside the loop
                     string branchSourcePath = Path.Combine(appPath, branchName);
-                    if (!Directory.Exists(branchSourcePath)) { Logger.Warning($"Branch source directory not found for zipping: {branchSourcePath}"); continue; }
+                    if (!Directory.Exists(branchSourcePath))
+                    {
+                        Logger.Warning($"Branch source directory not found for zipping: {branchSourcePath}");
+                        continue;
+                    }
 
                     DateTime branchDate = DateTime.Now;
                     if (branchLastModified.TryGetValue(branchName, out var date)) branchDate = date;
@@ -1109,11 +1298,25 @@ namespace DepotDumper
                     if (anyNewManifests) { CleanupOldZipsAndFolders(path, appId, branchName, folderName); }
                     if (!Directory.Exists(dateBranchFolder)) { Directory.CreateDirectory(dateBranchFolder); }
 
-                    if (File.Exists(zipFilePath) && !anyNewManifests) { Logger.Info($"Zip archive already exists and no new manifests downloaded for branch '{branchName}', skipping: {zipFilePath}"); continue; }
-                    if (File.Exists(zipFilePath)) { Logger.Info($"Updating zip archive for branch '{branchName}' due to new manifests."); File.Delete(zipFilePath); }
+                    if (File.Exists(zipFilePath) && !anyNewManifests)
+                    {
+                        Logger.Info($"Zip archive already exists and no new manifests downloaded for branch '{branchName}', skipping: {zipFilePath}");
+                        continue;
+                    }
+
+                    if (File.Exists(zipFilePath))
+                    {
+                        Logger.Info($"Updating zip archive for branch '{branchName}' due to new manifests.");
+                        File.Delete(zipFilePath);
+                    }
 
                     string tempDir = Path.Combine(path, $"temp_zip_{appId}_{Guid.NewGuid().ToString().Substring(0, 8)}");
-                    if (Directory.Exists(tempDir)) { try { Directory.Delete(tempDir, true); } catch (Exception ex) { Logger.Warning($"Error cleaning up temp zip directory {tempDir}: {ex.Message}"); } }
+                    if (Directory.Exists(tempDir))
+                    {
+                        try { Directory.Delete(tempDir, true); }
+                        catch (Exception ex) { Logger.Warning($"Error cleaning up temp zip directory {tempDir}: {ex.Message}"); }
+                    }
+
                     Directory.CreateDirectory(tempDir);
 
                     int manifestsIncluded = 0;
@@ -1124,7 +1327,8 @@ namespace DepotDumper
                     foreach (var file in Directory.EnumerateFiles(branchSourcePath))
                     {
                         string fileName = Path.GetFileName(file);
-                        if (fileName.EndsWith(".manifest") || fileName.EndsWith(".lua") || fileName.EndsWith(".key") || fileName.EndsWith(".info") || fileName.EndsWith(".dlcinfo"))
+                        if (fileName.EndsWith(".manifest") || fileName.EndsWith(".lua") || fileName.EndsWith(".key") ||
+                            fileName.EndsWith(".info") || fileName.EndsWith(".dlcinfo"))
                         {
                             try
                             {
@@ -1133,13 +1337,19 @@ namespace DepotDumper
                                 else if (fileName.EndsWith(".lua")) luaFilesIncluded++;
                                 else if (fileName.EndsWith(".key")) keyFilesIncluded++;
                                 else if (fileName.EndsWith(".info") || fileName.EndsWith(".dlcinfo")) infoFilesIncluded++;
-                            } catch (IOException ex) { Logger.Warning($"Failed to copy file {fileName} to temp zip dir: {ex.Message}"); continue; }
+                            }
+                            catch (IOException ex)
+                            {
+                                Logger.Warning($"Failed to copy file {fileName} to temp zip dir: {ex.Message}");
+                                continue;
+                            }
                         }
                     }
 
                     if (Directory.EnumerateFileSystemEntries(tempDir).Any())
                     {
-                        Logger.Info($"Creating zip for branch '{branchName}' with {manifestsIncluded} manifests, {luaFilesIncluded} lua, {keyFilesIncluded} key, {infoFilesIncluded} info files at {zipFilePath}");
+                        Logger.Info($"Creating zip for branch '{branchName}' with {manifestsIncluded} manifests, " +
+                                    $"{luaFilesIncluded} lua, {keyFilesIncluded} key, {infoFilesIncluded} info files at {zipFilePath}");
                         CreateZipArchive(tempDir, zipFilePath);
                     }
                     else
@@ -1149,14 +1359,15 @@ namespace DepotDumper
 
                     if (Directory.Exists(tempDir))
                     {
-                        try { Directory.Delete(tempDir, true); } catch { Logger.Warning($"Failed to delete temp zip directory: {tempDir}"); }
+                        try { Directory.Delete(tempDir, true); }
+                        catch { Logger.Warning($"Failed to delete temp zip directory: {tempDir}"); }
                     }
-
                 }
-                catch (Exception ex) { Logger.Error($"Error creating zip for branch '{branchName}' of app {appId}: {ex.ToString()}"); }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error creating zip for branch '{branchName}' of app {appId}: {ex.ToString()}");
+                }
             }
         }
-
     }
 }
-//comment to update
