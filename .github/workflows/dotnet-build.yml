@@ -1,5 +1,3 @@
-# .github/workflows/dotnet-build.yml
-
 name: DepotDumperMorrenusEdition
 
 on:
