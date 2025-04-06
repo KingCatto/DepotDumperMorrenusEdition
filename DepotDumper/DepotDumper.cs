@@ -619,6 +619,7 @@ namespace DepotDumper
             DepotManifest manifest = null;
             DateTime definitiveDate = manifestDate; // Initial value
             Logger.Debug($"Manifest {manifestId} (Depot {depotId}, App {appId}, Branch '{branch}'): Received manifestDate = {manifestDate}, Initial definitiveDate = {definitiveDate}");
+
             if (cdnPoolInstance == null)
             {
                 Logger.Error($"ProcessManifestIndividuallyAsync called with null cdnPoolInstance for manifest {manifestId}, depot {depotId}. Cannot proceed.");
@@ -626,6 +627,7 @@ namespace DepotDumper
                 StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, null, manifestErrors, null);
                 return;
             }
+
             try
             {
                 var cleanBranchName = branch.Replace('/', '_').Replace('\\', '_');
@@ -635,6 +637,7 @@ namespace DepotDumper
                 Directory.CreateDirectory(branchPath);
                 var manifestFilename = $"{depotId}_{manifestId}.manifest"; // Use actual depotId for filename
                 fullManifestPath = Path.Combine(branchPath, manifestFilename);
+
                 try
                 {
                     // Clean up old manifests using actual depotId
@@ -650,12 +653,14 @@ namespace DepotDumper
                     }
                 }
                 catch (Exception ex) { Logger.Warning($"Failed to clean up old manifests for depot {depotId} in branch '{cleanBranchName}': {ex.Message}"); }
+
                 bool shouldDownload = !File.Exists(fullManifestPath);
                 if (!shouldDownload)
                 {
                     manifestSkipped = true;
                     Logger.Info($"Manifest {manifestId} exists for depot {depotId} branch '{branch}', skipping download.");
                     Logger.Debug($"Manifest {manifestId}: Attempting to load existing file: {fullManifestPath}");
+
                     try
                     {
                         // Use actual depotId for loading
@@ -663,18 +668,20 @@ namespace DepotDumper
                         if (manifest != null)
                         {
                             Logger.Debug($"Manifest {manifestId}: Successfully loaded existing file. Manifest.CreationTime = {manifest.CreationTime}");
-                            // Use API date ONLY if it's valid (Year >= 2000) AND newer than manifest creation time
-                            if (manifestDate.Year >= 2000 && manifestDate > manifest.CreationTime)
+
+                            // MODIFIED: ALWAYS use manifest's creation time unless it's invalid
+                            if (manifest.CreationTime.Year >= 2000)
                             {
-                                definitiveDate = manifestDate;
-                                Logger.Debug($"Manifest {manifestId}: Using newer API date ({definitiveDate}) over manifest creation time ({manifest.CreationTime}) for skipped manifest.");
-                            }
-                            else
-                            {
-                                // Otherwise, use the manifest's creation time (either API date was invalid or older/same)
                                 definitiveDate = manifest.CreationTime;
                                 Logger.Debug($"Manifest {manifestId}: Using manifest creation time ({definitiveDate}) instead of API date ({manifestDate}) for skipped manifest.");
                             }
+                            else
+                            {
+                                // Only if manifest time is invalid, use API date
+                                definitiveDate = manifestDate;
+                                Logger.Debug($"Manifest {manifestId}: Using API date ({definitiveDate}) because manifest creation time is invalid for skipped manifest.");
+                            }
+
                             // Use passed appId (effectiveAppId) for Lua file name/path
                             string branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
                             Console.WriteLine($"Updating Lua file for existing manifest {manifestId} in branch '{branch}'");
@@ -692,6 +699,7 @@ namespace DepotDumper
                         manifestErrors.Add($"Error loading existing manifest {manifestId}: {ex.Message}");
                         Logger.Error($"Manifest {manifestId}: Exception loading existing manifest {fullManifestPath}: {ex.ToString()}");
                     }
+
                     // Use actual depotId for tracking
                     StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, true, fullManifestPath, manifestErrors.Count > 0 ? manifestErrors : null, manifest?.CreationTime); // Pass manifest time if loaded
                     Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} skipped for depot {depotId} branch '{branch}'");
@@ -714,24 +722,27 @@ namespace DepotDumper
                         manifestErrors.Add(errorMsg);
                         Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}");
                     }
+
                     if (manifest != null)
                     {
                         try
                         {
                             manifest.SaveToFile(fullManifestPath);
                             manifestDownloaded = true;
-                            // Use API date ONLY if it's valid (Year >= 2000) AND newer than manifest creation time
-                            if (manifestDate.Year >= 2000 && manifestDate > manifest.CreationTime)
+
+                            // MODIFIED: ALWAYS use manifest's creation time unless it's invalid
+                            if (manifest.CreationTime.Year >= 2000)
                             {
-                                definitiveDate = manifestDate;
-                                Logger.Debug($"Manifest {manifestId}: Using newer API date ({definitiveDate}) over manifest creation time ({manifest.CreationTime}) after download.");
-                            }
-                            else
-                            {
-                                // Otherwise, use the manifest's creation time (either API date was invalid or older/same)
                                 definitiveDate = manifest.CreationTime;
                                 Logger.Debug($"Manifest {manifestId}: Using manifest creation time ({definitiveDate}) instead of API date ({manifestDate}) after download.");
                             }
+                            else
+                            {
+                                // Only if manifest time is invalid, use API date
+                                definitiveDate = manifestDate;
+                                Logger.Debug($"Manifest {manifestId}: Using API date ({definitiveDate}) because manifest creation time is invalid after download.");
+                            }
+
                             Logger.Info($"Successfully saved manifest {manifestId} from branch '{branch}' to {fullManifestPath}");
                             // Use passed appId (effectiveAppId) for Lua file name/path
                             string branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
@@ -760,12 +771,17 @@ namespace DepotDumper
                         Logger.Warning($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} download failed for depot {depotId} branch '{branch}'");
                     }
                 }
+
                 Logger.Debug($"Manifest {manifestId} (Depot {depotId}, Branch '{branch}'): Final definitiveDate before AddOrUpdate = {definitiveDate}");
+
                 branchLastModified.AddOrUpdate(cleanBranchName, definitiveDate, (key, existingDate) =>
                 {
-                    Logger.Debug($"Manifest {manifestId}: Updating branch '{key}'. ExistingDate={existingDate}, NewDate={definitiveDate}. Using {(definitiveDate > existingDate ? definitiveDate : existingDate)}");
-                    return definitiveDate > existingDate ? definitiveDate : existingDate; // Use the later date
+                    // Always prefer the older date
+                    var dateToUse = definitiveDate < existingDate ? definitiveDate : existingDate;
+                    Logger.Debug($"Manifest {manifestId}: Updating branch '{key}'. ExistingDate={existingDate}, NewDate={definitiveDate}. Using {dateToUse}");
+                    return dateToUse;
                 });
+
                 processedBranches.Add(cleanBranchName);
             }
             catch (Exception ex)
@@ -932,6 +948,7 @@ namespace DepotDumper
         {
             appDlcInfo ??= new Dictionary<uint, string>();
             CDNClientPool currentCdnPool = null;
+
             try
             {
                 // Check if this is a DLC and get parent app ID
@@ -941,8 +958,10 @@ namespace DepotDumper
                     effectiveAppId = parentAppId;
                     Logger.Info($"Using parent app {parentAppId} directory for DLC {appId} manifests");
                 }
+
                 currentCdnPool = new CDNClientPool(steam3, appId);
                 await steam3.RequestDepotKey(depotId, appId);
+
                 if (!steam3.DepotKeys.TryGetValue(depotId, out var depotKey))
                 {
                     Console.WriteLine("No valid depot key for {0} (App Context: {1}).", depotId, appId);
@@ -950,15 +969,21 @@ namespace DepotDumper
                     StatisticsTracker.TrackDepotSkipped(depotId, effectiveAppId, "Missing depot key"); // Use effectiveAppId for tracking
                     return;
                 }
+
                 var manifestsToDump = await GetManifestsToDumpAsync(depotId, appId);
+
                 Logger.Info($"Starting to process depot {depotId} for app context {appId}");
                 Console.WriteLine($"Starting to process depot {depotId} for app context {appId}");
+
                 string depotKeyHex = string.Concat(depotKey.Select(b => b.ToString("X2")).ToArray());
+
                 // Use the effective app ID (parent app ID for DLCs) for paths
                 string appDumpPath = Path.Combine(path, effectiveAppId.ToString());
                 Directory.CreateDirectory(appDumpPath);
+
                 var keyFilePath = Path.Combine(appDumpPath, $"{effectiveAppId.ToString()}.key"); // Use effectiveAppId for key file name
                 bool keyExists = false;
+
                 if (File.Exists(keyFilePath))
                 {
                     string linePrefix = $"{depotId};";
@@ -971,6 +996,7 @@ namespace DepotDumper
                         Logger.Warning($"Could not read key file {keyFilePath}: {ex.Message}");
                     }
                 }
+
                 if (!keyExists)
                 {
                     try
@@ -989,6 +1015,7 @@ namespace DepotDumper
                     Console.WriteLine("Using existing depot {0} key", depotId);
                     Logger.Debug($"Key for Depot {depotId} already exists in {keyFilePath}");
                 }
+
                 if (manifestsToDump.Count == 0)
                 {
                     Console.WriteLine("No accessible manifests found for depot {0}.", depotId);
@@ -996,18 +1023,25 @@ namespace DepotDumper
                     StatisticsTracker.TrackDepotCompletion(depotId, true); // Track as complete, but with no manifests
                     return;
                 }
+
+                // NEW LOGGING: Log the appLastUpdated date
                 DateTime defaultDate = appLastUpdated ?? DateTime.Now;
                 Logger.Debug($"Depot {depotId} (App {appId}): appLastUpdated = {appLastUpdated}, defaultDate set to: {defaultDate}");
+
                 int maxConcurrent = Config.MaxDownloads > 0 ? Config.MaxDownloads : 4;
                 Console.WriteLine($"Processing {manifestsToDump.Count} manifests for depot {depotId} with up to {maxConcurrent} at a time");
                 Logger.Info($"Processing {manifestsToDump.Count} manifests for depot {depotId} with up to {maxConcurrent} at a time");
+
                 var tasks = new List<Task>();
                 using var concurrencySemaphore = new SemaphoreSlim(maxConcurrent);
+
                 StatisticsTracker.TrackDepotStart(depotId, effectiveAppId, manifestsToDump.Count); // Use effectiveAppId
                 Logger.Debug($"[DumpDepotAsync] Starting dump of depot {depotId} for app {effectiveAppId}. Manifest count: {manifestsToDump.Count}"); // Use effectiveAppId
+
                 foreach (var (manifestId, branch) in manifestsToDump)
                 {
                     DateTime manifestDate = defaultDate; // Start with the default date derived from appLastUpdated or Now
+
                     // NOTE: The manifestDates dictionary passed in is currently unused in the calling code (DumpAppAsync).
                     // If it were used, this would potentially override the defaultDate.
                     if (manifestDates != null && manifestDates.TryGetValue((depotId, branch), out DateTime specificDate))
@@ -1015,6 +1049,7 @@ namespace DepotDumper
                         manifestDate = specificDate;
                         Logger.Debug($"Depot {depotId}, Branch '{branch}': Using specific date from manifestDates dictionary: {manifestDate}");
                     }
+
                     await concurrencySemaphore.WaitAsync();
                     // Pass the effective app ID to ensure DLC manifests go to parent app folder
                     tasks.Add(Task.Run(async () =>
@@ -1030,9 +1065,12 @@ namespace DepotDumper
                         }
                     }));
                 }
+
                 await Task.WhenAll(tasks);
+
                 Console.WriteLine($"Completed processing all manifests for depot {depotId}");
                 Logger.Info($"Completed processing all manifests for depot {depotId}");
+
                 StatisticsTracker.TrackDepotCompletion(depotId, true); // Assume success if no major exception bubbled up
             }
             catch (Exception e)
@@ -1359,14 +1397,24 @@ namespace DepotDumper
                 Logger.Info($"No branches processed for app {appId} ('{appName}'), skipping zip creation.");
                 return;
             }
+
             Console.WriteLine($"Creating zip archives for {processedBranches.Count} branches of app {appId} ('{appName}')");
             Logger.Info($"Creating zip archives for {processedBranches.Count} branches of app {appId} ('{appName}')");
+
+            // NEW CODE: Debug dump of branchLastModified dictionary
+            Logger.Debug($"Contents of branchLastModified dictionary:");
+            foreach (var kvp in branchLastModified)
+            {
+                Logger.Debug($"  Branch '{kvp.Key}', Date: {kvp.Value}");
+            }
+
             string safeAppName = appName;
             // Use appId (which is the effective/parent appId passed in) for pathing
             string appPath = Path.Combine(path, appId.ToString());
             string infoFilePath = Path.Combine(appPath, $"{appId}.info");
             // Also check for potential DLC info file using the same appId path context
             string dlcInfoFilePath = Path.Combine(appPath, $"{appId}.dlcinfo");
+
             try
             {
                 // Prioritize info file if it exists at the effective appId path
@@ -1417,6 +1465,7 @@ namespace DepotDumper
             {
                 Logger.Warning($"Error reading info/dlcinfo file for app {appId}: {ex.Message}. Using potentially fallback name '{safeAppName}'.");
             }
+
             // Fallback to API if name is still default, empty, or potentially just the ID
             if (string.IsNullOrWhiteSpace(safeAppName) || safeAppName == $"Unknown App {appId}" || safeAppName == $"App {appId}" || safeAppName == appName)
             {
@@ -1450,13 +1499,22 @@ namespace DepotDumper
                     Logger.Warning($"Failed to get app name from API: {apiEx.Message}. Using original name '{safeAppName}'.");
                 }
             }
+
             safeAppName = string.Join("_", safeAppName.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
             if (safeAppName.Length > 50) safeAppName = safeAppName.Substring(0, 50);
             safeAppName = safeAppName.Replace("__", "_").Trim('_');
             if (string.IsNullOrEmpty(safeAppName)) safeAppName = $"Unknown_App_{appId}"; // Ensure some valid name
+
+            // Make sure safe app name doesn't contain periods since they break folder name parsing
+            safeAppName = safeAppName.Replace('.', '_');
+
             // Use a different variable name in the loop to avoid conflict
             foreach (var branchName in processedBranches)
             {
+                // NEW CODE: Debug check if branch is in the dictionary
+                Logger.Debug($"Branch '{branchName}' in processedBranches: {processedBranches.Contains(branchName)}");
+                Logger.Debug($"Branch '{branchName}' in branchLastModified: {branchLastModified.ContainsKey(branchName)}");
+
                 try
                 {
                     // Use a different name for the path variable inside the loop
@@ -1467,6 +1525,7 @@ namespace DepotDumper
                         Logger.Warning($"Branch source directory not found for zipping: {branchSourcePath}");
                         continue;
                     }
+
                     DateTime branchDate = DateTime.Now; // Default fallback
                     if (branchLastModified.TryGetValue(branchName, out var date))
                     {
@@ -1477,36 +1536,45 @@ namespace DepotDumper
                     {
                         Logger.Warning($"Zip Creation (App {appId}, Branch '{branchName}'): Date NOT found in branchLastModified. Falling back to DateTime.Now ({branchDate}).");
                     }
+
                     string dateTimeStr = branchDate.ToString("yyyy-MM-dd_HH-mm-ss");
                     Logger.Debug($"Zip Creation (App {appId}, Branch '{branchName}'): Using dateTimeStr: {dateTimeStr}");
+
                     // Use appId (effective/parent ID) in the folder name structure
                     string folderName = $"{appId}.{branchName}.{dateTimeStr}.{safeAppName}";
                     string dateBranchFolder = Path.Combine(appPath, folderName); // Base folder using appId
                     string zipFilePath = Path.Combine(dateBranchFolder, $"{appId}.zip"); // Zip name also uses appId
+
                     // Use appId (effective/parent ID) for cleanup path context
                     if (anyNewManifests) { CleanupOldZipsAndFolders(path, appId, branchName, folderName); }
+
                     if (!Directory.Exists(dateBranchFolder)) { Directory.CreateDirectory(dateBranchFolder); }
+
                     if (File.Exists(zipFilePath) && !anyNewManifests)
                     {
                         Logger.Info($"Zip archive already exists and no new manifests downloaded for branch '{branchName}', skipping: {zipFilePath}");
                         continue;
                     }
+
                     if (File.Exists(zipFilePath))
                     {
                         Logger.Info($"Updating zip archive for branch '{branchName}' due to new manifests.");
                         File.Delete(zipFilePath);
                     }
+
                     string tempDir = Path.Combine(path, $"temp_zip_{appId}_{Guid.NewGuid().ToString().Substring(0, 8)}");
                     if (Directory.Exists(tempDir))
                     {
                         try { Directory.Delete(tempDir, true); }
                         catch (Exception ex) { Logger.Warning($"Error cleaning up temp zip directory {tempDir}: {ex.Message}"); }
                     }
+
                     Directory.CreateDirectory(tempDir);
                     int manifestsIncluded = 0;
                     int luaFilesIncluded = 0;
                     int keyFilesIncluded = 0;
                     int infoFilesIncluded = 0;
+
                     // Files to include are typically within the branchSourcePath
                     foreach (var file in Directory.EnumerateFiles(branchSourcePath))
                     {
@@ -1531,6 +1599,7 @@ namespace DepotDumper
                             }
                         }
                     }
+
                     if (Directory.EnumerateFileSystemEntries(tempDir).Any())
                     {
                         Logger.Info($"Creating zip for branch '{branchName}' with {manifestsIncluded} manifests, " +
@@ -1541,6 +1610,7 @@ namespace DepotDumper
                     {
                         Logger.Info($"No files found to include in zip for branch '{branchName}' of app {appId}");
                     }
+
                     if (Directory.Exists(tempDir))
                     {
                         try { Directory.Delete(tempDir, true); }
