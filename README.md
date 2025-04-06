@@ -1,3 +1,4 @@
+#
 # Credits
 https://github.com/SteamAutoCracks/DepotDumper for the code he did then the credits he gave to the people before that.
 # DepotDumper
