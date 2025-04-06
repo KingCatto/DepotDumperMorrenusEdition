@@ -5,36 +5,69 @@ namespace DepotDumper
     public static class ConfigUtility
     {
         public static void CreateOrUpdateConfig(string configPath = null)
-        {
-            var config = ConfigFile.Load();
-            Console.WriteLine("\n=== DepotDumper Configuration Utility ===\n");
-            Console.WriteLine("=== Authentication Settings ===");
-            config.Username = PromptForInput("Steam Username", config.Username);
-            Console.Write($"Steam Password [{(string.IsNullOrEmpty(config.Password) ? "not set" : "****")}]: ");
-            var passwordInput = Console.ReadLine();
-            if (!string.IsNullOrEmpty(passwordInput))
-            {
-                config.Password = passwordInput;
-            }
-            config.RememberPassword = PromptForBool("Remember Password", config.RememberPassword);
-            config.UseQrCode = PromptForBool("Use QR Code for Login", config.UseQrCode);
-            Console.WriteLine("\n=== Performance Settings ===");
-            config.MaxDownloads = PromptForInt("Max Concurrent Downloads per App", config.MaxDownloads);
-            config.MaxConcurrentApps = PromptForInt("Max Concurrent Apps to Process", config.MaxConcurrentApps);
-            config.MaxServers = PromptForInt("Max Servers", config.MaxServers);
-            Console.WriteLine("\n=== Output Settings ===");
-            config.DumpDirectory = PromptForInput("Dump Directory", config.DumpDirectory);
-            config.UseNewNamingFormat = PromptForBool("Use New Naming Format", config.UseNewNamingFormat);
-            Console.WriteLine("\n=== App ID Settings ===");
-            bool editAppIds = PromptForBool("Edit App IDs", false);
-            if (editAppIds)
-            {
-                EditAppIds(config);
-            }
-            config.Save();
-            Console.WriteLine("Configuration saved successfully!");
-        }
+{
+    var config = ConfigFile.Load();
+    Console.WriteLine("\n=== DepotDumper Configuration Utility ===\n");
+    Console.WriteLine("=== Authentication Settings ===");
+    config.Username = PromptForInput("Steam Username", config.Username);
+    Console.Write($"Steam Password [{(string.IsNullOrEmpty(config.Password) ? "not set" : "****")}]: ");
+    var passwordInput = Console.ReadLine();
+    if (!string.IsNullOrEmpty(passwordInput))
+    {
+        config.Password = passwordInput;
+    }
+    config.RememberPassword = PromptForBool("Remember Password", config.RememberPassword);
+    config.UseQrCode = PromptForBool("Use QR Code for Login", config.UseQrCode);
+    
+    Console.WriteLine("\n=== Performance Settings ===");
+    config.MaxDownloads = PromptForInt("Max Concurrent Downloads per App", config.MaxDownloads);
+    config.MaxConcurrentApps = PromptForInt("Max Concurrent Apps to Process", config.MaxConcurrentApps);
+    config.MaxServers = PromptForInt("Max Servers", config.MaxServers);
+    
+    Console.WriteLine("\n=== Output Settings ===");
+    config.DumpDirectory = PromptForInput("Dump Directory", config.DumpDirectory);
+    config.UseNewNamingFormat = PromptForBool("Use New Naming Format", config.UseNewNamingFormat);
+    
+    // NEW SECTION: Add log level configuration
+    Console.WriteLine("\n=== Logging Settings ===");
+    string[] validLevels = { "Debug", "Info", "Warning", "Error", "Critical" };
+    bool validLevel = false;
+    string logLevelInput = config.LogLevel;
+    
+    do {
+        Console.Write($"Log Level [{config.LogLevel}] (Debug, Info, Warning, Error, Critical): ");
+        string input = Console.ReadLine();
         
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            validLevel = true; // Keep default
+        }
+        else
+        {
+            if (validLevels.Contains(input, StringComparer.OrdinalIgnoreCase))
+            {
+                logLevelInput = input;
+                validLevel = true;
+            }
+            else
+            {
+                Console.WriteLine($"Invalid log level. Please enter one of: {string.Join(", ", validLevels)}");
+            }
+        }
+    } while (!validLevel);
+    
+    config.LogLevel = logLevelInput;
+    
+    Console.WriteLine("\n=== App ID Settings ===");
+    bool editAppIds = PromptForBool("Edit App IDs", false);
+    if (editAppIds)
+    {
+        EditAppIds(config);
+    }
+    
+    config.Save();
+    Console.WriteLine("Configuration saved successfully!");
+}
         private static void EditAppIds(ConfigFile config)
         {
             bool continueEditing = true;

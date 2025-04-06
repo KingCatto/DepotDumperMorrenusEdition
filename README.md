@@ -1,119 +1,83 @@
-#
-# Credits
-https://github.com/SteamAutoCracks/DepotDumper for the code he did then the credits he gave to the people before that.
 # DepotDumper
 
-A Steam depot key and manifest dumping utility utilizing the SteamKit2 library. This tool helps archive and extract Steam depots' encryption keys and manifests, which can be useful for game preservation and research purposes.
+DepotDumper is a utility for extracting and managing Steam depot keys. It helps you dump depot information, manifest files, and create organized zip archives for later use.
 
 ## Features
 
-- Dump Steam depot keys and manifests for games in your library
+- Dump depot keys and manifest files from your Steam account
+- Organize dumps into folders by app ID, branch, and date
+- Create ZIP archives of dumped data
+- Generate detailed reports in HTML, CSV, JSON, and TXT formats
 - Process multiple apps in parallel
-- Generate detailed reports in HTML, JSON, CSV, and TXT formats
-- Support for branch-specific manifest extraction
-- QR code login support for Steam Guard
-- Automatic DLC detection and inclusion
-- Batch processing via config files or command line
-- Options to save results as ZIP archives
+- Track statistics of your dumping operations
+- Configurable through command line or config.json
+- Support for QR code login and token authentication
 
-## Requirements
+## Installation
 
-- .NET 9.0 runtime or later
-- A valid Steam account with games in your library
-- Windows, macOS, or Linux operating system
+1. Download the latest release from the releases page
+2. Extract to a folder of your choice
+3. Run DepotDumper.exe
 
 ## Usage
 
 ### Basic Usage
 
-```bash
-# Dumping keys for all owned games
-.\DepotDumper.exe -username steamuser -password yourpassword
-
-# Dumping keys for a specific app
-.\DepotDumper.exe -username steamuser -password yourpassword -appid 440
-
-# Using remembered password/token
-.\DepotDumper.exe -username steamuser -remember-password
-
-# Using QR code login (through Steam Mobile App)
-.\DepotDumper.exe -username steamuser -qr
+```
+DepotDumper -username <username> -password <password> [options]
 ```
 
-### Configuration Utility
+### Quick Start
 
-```bash
-# Launch configuration utility
-.\DepotDumper.exe config create
+Double-click the executable to run with the settings from `config.json` in the same directory.
 
-# Add app to configuration
-.\DepotDumper.exe config add-app 440
+### Configuration
 
-# List configured apps
-.\DepotDumper.exe config list-apps
-```
+You can configure DepotDumper through:
 
-## Command Line Parameters
+1. Command line parameters
+2. Configuration file (config.json)
+3. Interactive configuration utility (`DepotDumper config`)
 
-### Authentication Options
-| Parameter | Description |
-|-----------|-------------|
-| `-username` | Steam account username |
-| `-password` | Steam account password |
-| `-qr` | Use QR code for login via Steam Mobile App |
-| `-remember-password` | Remember password/token for subsequent logins |
-| `-loginid` | Unique 32-bit ID for multiple concurrent instances |
+### Command Line Options
 
-### App Selection Options
-| Parameter | Description |
-|-----------|-------------|
-| `-appid` | Dump ONLY depot keys for this specific App ID |
-| `-appids-file` | Process App IDs listed in specified file (one per line) |
-| `-select` | Interactively select which depots to process |
+#### Required Account Options:
+- `-username <user>` - Your Steam username
+- `-password <pass>` - Your Steam password (not needed with QR or remember-password)
 
-### Output Options
-| Parameter | Description |
-|-----------|-------------|
-| `-dir` | Directory for dumped files (Default: 'dumps') |
-| `-generate-reports` | Generate HTML, JSON, CSV, and TXT reports |
-| `-reports-dir` | Directory for report files (Default: dumps/reports) |
-| `-logs-dir` | Directory for log files (Default: dumps/logs) |
-| `-log-level` | Logging detail level (debug, info, warning, error, critical) |
+#### Optional Login Options:
+- `-qr` - Use QR code for login via Steam Mobile App
+- `-remember-password` - Remember password/token for subsequent logins
+- `-loginid <#>` - Unique 32-bit ID for running multiple instances
 
-### Performance Options
-| Parameter | Description |
-|-----------|-------------|
-| `-max-downloads` | Maximum concurrent manifest downloads per depot (Default: 4) |
-| `-max-servers` | Maximum CDN servers to use (Default: 20) |
-| `-max-concurrent-apps` | Maximum apps to process concurrently (Default: 1) |
-| `-cellid` | Specify Cell ID for connection (Default: Auto) |
+#### Dumping Options:
+- `-appid <#>` - Dump ONLY depots for this specific App ID
+- `-appids-file <path>` - Dump ONLY depots for App IDs listed in the file
+- `-select` - Interactively select depots to dump
 
-### Configuration Options
-| Parameter | Description |
-|-----------|-------------|
-| `-config` | Use configuration from the specified JSON file |
-| `-save-config` | Save current settings to config file |
+#### Configuration & Output Options:
+- `-config <path>` - Use config from specified JSON file (Default: config.json)
+- `-save-config` - Save current settings back to the config file
+- `-dir <path>` - Directory to dump depots (Default: 'dumps')
+- `-log-level <level>` - Set logging detail level
+- `-logs-dir <path>` - Directory for log files (Default: dumps/logs)
+- `-generate-reports` - Generate reports after completion
+- `-reports-dir <path>` - Directory for reports (Default: dumps/reports)
 
-## Output Files
+#### Performance Options:
+- `-max-downloads <#>` - Max concurrent manifest downloads per depot (Default: 4)
+- `-max-servers <#>` - Max CDN servers to use (Default: 20)
+- `-max-concurrent-apps <#>` - Max apps to process concurrently (Default: 1)
+- `-cellid <#>` - Specify Cell ID for connection (Default: Auto)
 
-The program creates several files in the output directory:
+#### Other Options:
+- `-debug` - Enable verbose debug messages
+- `-V | --version` - Show version information
+- `config` - Enter configuration utility mode
 
-- **App folders**: Each app gets its own folder named by App ID
-- **Manifests**: Files with pattern `[DepotID]_[ManifestID].manifest`
-- **Key files**: Files with pattern `[AppID].key` containing depot keys
-- **Info files**: Files with pattern `[AppID].info` containing app metadata
-- **Lua files**: Helper files with pattern `[AppID].lua` for each branch
-- **Reports**: HTML, JSON, CSV, and TXT reports in the reports directory
+## Configuration File
 
-## Configuration
-
-A JSON configuration file can be created with the configuration utility:
-
-```bash
-DepotDumper config create
-```
-
-The configuration file supports these settings:
+The configuration file (`config.json`) can be used to store your settings. Here's an example:
 
 ```json
 {
@@ -128,22 +92,60 @@ The configuration file supports these settings:
   "DumpDirectory": "dumps",
   "UseNewNamingFormat": true,
   "MaxConcurrentApps": 1,
-  "AppIdsToProcess": [440, 570, 730],
-  "ExcludedAppIds": [220]
+  "LogLevel": "Info",
+  "AppIdsToProcess": [],
+  "ExcludedAppIds": []
 }
 ```
 
-## Notes
+### LogLevel Options
 
-- All tokens and keys are global and identical for every Steam user. They do not identify you or your account.
-- The program supports running with no parameters if a valid `config.json` file exists.
-- When using QR code login, the code will display in the console for scanning with the Steam Mobile App.
-- The application will generate logs in the specified logs directory for troubleshooting.
+The `LogLevel` property controls the verbosity of logging. Available levels are:
 
-## Credits
+- `Debug` - Most verbose, shows all messages (useful for troubleshooting)
+- `Info` - Shows informational messages and above (default)
+- `Warning` - Shows warnings and errors only
+- `Error` - Shows only errors 
+- `Critical` - Shows only critical errors
 
-DepotDumper is based on the SteamKit2 library and inspired by DepotDownloader.
+## Configuration Utility
+
+You can use the built-in configuration utility to interactively set up your config file:
+
+```
+DepotDumper config
+```
+
+## Output Structure
+
+DepotDumper organizes dumps in the following structure:
+
+```
+dumps/
+├── AppID/
+│   ├── Branch/
+│   │   ├── DepotID_ManifestID.manifest
+│   │   └── AppID.lua
+│   └── AppID.key
+├── reports/
+│   ├── report.html
+│   ├── summary.txt
+│   ├── apps.csv
+│   └── full_report.json
+└── logs/
+    └── depotdumper_YYYYMMDD_HHMMSS.log
+```
+
+For each manifest processed, DepotDumper creates a ZIP archive with the format:
+```
+AppID.Branch.YYYY-MM-DD_HH-MM-SS.AppName/AppID.zip
+```
 
 ## License
 
-This project is licensed under GNU General Public License v2.0.
+This utility is provided as-is without any warranty. Use at your own risk.
+
+## Acknowledgements
+
+Based on the Steam platform by Valve Corporation.
+Uses SteamKit2 for Steam communication.

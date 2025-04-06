@@ -119,6 +119,14 @@ namespace DepotDumper
                     Console.WriteLine($"Warning: Invalid log level '{levelStr}'. Defaulting to Info.");
                 }
             }
+            else if (!string.IsNullOrEmpty(config.LogLevel))
+            {
+                if (!Enum.TryParse<LogLevel>(config.LogLevel, true, out logLevel))
+                {
+                    logLevel = LogLevel.Info;
+                    Console.WriteLine($"Warning: Invalid log level '{config.LogLevel}' in config. Defaulting to Info.");
+                }
+            }
             try { Directory.CreateDirectory(logsDirectory); } catch (Exception ex) { Console.WriteLine($"Warning: Could not create logs directory '{logsDirectory}': {ex.Message}"); }
             string logFilePath = Path.Combine(logsDirectory, $"depotdumper_{DateTime.Now:yyyyMMdd_HHmmss}.log");
             Logger.Initialize(logFilePath, logLevel, toConsole: !Console.IsOutputRedirected, toFile: true);

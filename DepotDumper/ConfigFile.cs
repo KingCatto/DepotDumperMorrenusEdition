@@ -3,8 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Reflection;
-using System.Linq;
 namespace DepotDumper
 {
     public class ConfigFile
@@ -20,8 +18,10 @@ namespace DepotDumper
         public string DumpDirectory { get; set; } = "dumps";
         public bool UseNewNamingFormat { get; set; } = true;
         public int MaxConcurrentApps { get; set; } = 1;
+        public string LogLevel { get; set; } = "Info"; // New property for LogLevel
         public HashSet<uint> AppIdsToProcess { get; set; } = new HashSet<uint>();
         public HashSet<uint> ExcludedAppIds { get; set; } = new HashSet<uint>();
+
         [JsonIgnore]
         public Dictionary<uint, bool> AppIDs
         {
@@ -35,13 +35,16 @@ namespace DepotDumper
                 return result;
             }
         }
+
         private static readonly string DefaultConfigPath = Path.Combine(
             AppContext.BaseDirectory,
             "config.json");
+
         public static ConfigFile Load()
         {
             return Load(DefaultConfigPath);
         }
+
         public static ConfigFile Load(string path)
         {
             try
@@ -82,10 +85,12 @@ namespace DepotDumper
                 return new ConfigFile();
             }
         }
+
         public void Save()
         {
             Save(DefaultConfigPath);
         }
+
         public void Save(string path)
         {
             if (string.IsNullOrEmpty(path))
@@ -128,6 +133,7 @@ namespace DepotDumper
                 Logger.Error($"{errorMessage} - StackTrace: {ex.StackTrace}");
             }
         }
+
         public void ApplyToDepotDumperConfig()
         {
             DepotDumper.Config ??= new DumpConfig();
@@ -139,7 +145,9 @@ namespace DepotDumper
             DepotDumper.Config.LoginID = this.LoginID;
             DepotDumper.Config.DumpDirectory = this.DumpDirectory;
             DepotDumper.Config.UseNewNamingFormat = this.UseNewNamingFormat;
+            DepotDumper.Config.LogLevel = this.LogLevel; // Apply LogLevel to DumpConfig
         }
+
         public void MergeCommandLineParameters(string[] args)
         {
             if (Program.HasParameter(args, "-username") || Program.HasParameter(args, "-user"))
@@ -182,6 +190,10 @@ namespace DepotDumper
             if (Program.HasParameter(args, "-max-concurrent-apps"))
             {
                 MaxConcurrentApps = Program.GetParameter(args, "-max-concurrent-apps", 1);
+            }
+            if (Program.HasParameter(args, "-log-level"))
+            {
+                LogLevel = Program.GetParameter<string>(args, "-log-level", "Info");
             }
             ApplyToDepotDumperConfig();
         }
