@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization; // Ensure this line exists
 
 namespace DepotDumper
 {
@@ -51,8 +52,8 @@ namespace DepotDumper
             sb.AppendLine("=== Apps Processed ===");
             foreach (var app in summary.AppSummaries)
             {
-                // Corrected Line 43: Use ComputedSuccess
                 sb.AppendLine($"App {app.AppId} ({app.AppName}): {(app.ComputedSuccess ? "Success" : "Failed")}");
+                sb.AppendLine($"  Last Updated: {app.LastUpdated?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A"}"); // ADDED LINE
                 sb.AppendLine($"  Depots: {app.ProcessedDepots}/{app.TotalDepots} (Skipped: {app.SkippedDepots})");
                 sb.AppendLine($"  Manifests: {app.NewManifests} new, {app.SkippedManifests} skipped");
                 if (app.AppErrors.Count > 0)
@@ -102,13 +103,13 @@ namespace DepotDumper
         {
             var sb = new StringBuilder();
             // Header row
-            sb.AppendLine("AppId,AppName,TotalDepots,ProcessedDepots,SkippedDepots,NewManifests,SkippedManifests,Status,ErrorCount");
+            sb.AppendLine("AppId,AppName,LastUpdated,TotalDepots,ProcessedDepots,SkippedDepots,NewManifests,SkippedManifests,Status,ErrorCount"); // MODIFIED HEADER
 
             foreach (var app in summary.AppSummaries)
             {
-                // Corrected Line 89: Use ComputedSuccess (indirectly via statusText assignment)
                 string statusText = app.ComputedSuccess ? "Success" : "Failed";
-                sb.AppendLine($"{app.AppId},\"{EscapeCsvField(app.AppName)}\",{app.TotalDepots},{app.ProcessedDepots},{app.SkippedDepots},{app.NewManifests},{app.SkippedManifests},{statusText},{app.AppErrors.Count}");
+                string lastUpdatedText = app.LastUpdated?.ToString("yyyy-MM-dd HH:mm:ss") ?? ""; // ADDED FORMATTING
+                sb.AppendLine($"{app.AppId},\"{EscapeCsvField(app.AppName)}\",\"{lastUpdatedText}\",{app.TotalDepots},{app.ProcessedDepots},{app.SkippedDepots},{app.NewManifests},{app.SkippedManifests},{statusText},{app.AppErrors.Count}"); // MODIFIED DATA ROW
             }
 
             File.WriteAllText(path, sb.ToString());
@@ -119,7 +120,8 @@ namespace DepotDumper
         {
             var options = new JsonSerializerOptions
             {
-                WriteIndented = true
+                WriteIndented = true,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
             };
             string json = JsonSerializer.Serialize(summary, options);
             File.WriteAllText(path, json);

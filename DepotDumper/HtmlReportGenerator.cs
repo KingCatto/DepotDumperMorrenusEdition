@@ -296,7 +296,7 @@ namespace DepotDumper
             sb.AppendLine("    <div class=\"container\">");
             sb.AppendLine("        <header>");
             sb.AppendLine("            <h1>DepotDumper Operation Report</h1>");
-            sb.AppendLine($"            <div class=\"timestamp\">Generated on {DateTime.Now:MMMM d, yyyy} at {DateTime.Now:h:mm:ss tt}</div>"); // Corrected ordinal format
+            sb.AppendLine($"            <div class=\"timestamp\">Generated on {DateTime.Now:MMMM d, yyyy} at {DateTime.Now:h:mm:ss tt}</div>"); // Corrected ordinal format removed for simplicity
             sb.AppendLine("        </header>");
             sb.AppendLine("        <div class=\"card\">");
             sb.AppendLine("            <div class=\"card-header\">");
@@ -386,6 +386,7 @@ namespace DepotDumper
             sb.AppendLine("                        <tr>");
             sb.AppendLine("                            <th>App ID</th>");
             sb.AppendLine("                            <th>Name</th>");
+            sb.AppendLine("                            <th>Last Updated</th>"); // ADDED HEADER
             sb.AppendLine("                            <th>Depots</th>");
             sb.AppendLine("                            <th>Manifests</th>");
             sb.AppendLine("                            <th>Status</th>");
@@ -395,20 +396,19 @@ namespace DepotDumper
             sb.AppendLine("                    <tbody>");
             foreach (var app in summary.AppSummaries)
             {
-                // Corrected Line 397: Use ComputedSuccess
                 string statusClass = app.ComputedSuccess ? "status-success" : "status-failed";
-                // Corrected Line 398: Use ComputedSuccess
                 string statusText = app.ComputedSuccess ? "Success" : "Failed";
                 sb.AppendLine("                        <tr>");
                 sb.AppendLine($"                            <td>{app.AppId}</td>");
                 sb.AppendLine($"                            <td>{HtmlEncode(app.AppName)}</td>");
+                sb.AppendLine($"                            <td>{app.LastUpdated?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A"}</td>"); // ADDED DATA CELL
                 sb.AppendLine($"                            <td>{app.ProcessedDepots}/{app.TotalDepots}</td>");
                 sb.AppendLine($"                            <td>{app.NewManifests} new, {app.SkippedManifests} skipped</td>");
                 sb.AppendLine($"                            <td><span class=\"app-status {statusClass}\">{statusText}</span></td>");
                 sb.AppendLine($"                            <td><button id=\"toggle-{app.AppId}\" class=\"details-toggle\" onclick=\"toggleDetails({app.AppId})\">Show Details</button></td>");
                 sb.AppendLine("                        </tr>");
                 sb.AppendLine("                        <tr>");
-                sb.AppendLine($"                            <td colspan=\"6\"><div id=\"details-{app.AppId}\" class=\"details-content\">");
+                sb.AppendLine($"                            <td colspan=\"7\"><div id=\"details-{app.AppId}\" class=\"details-content\">"); // Adjusted colspan
                 if (app.DepotSummaries.Count > 0)
                 {
                     sb.AppendLine("                                <h3>Depot Details</h3>");
@@ -425,9 +425,7 @@ namespace DepotDumper
                     sb.AppendLine("                                    <tbody>");
                     foreach (var depot in app.DepotSummaries)
                     {
-                        // Corrected Line 425: Use ComputedSuccess
                         string depotStatusClass = depot.ComputedSuccess ? "status-success" : "status-failed";
-                        // Corrected Line 426: Use ComputedSuccess
                         string depotStatusText = depot.ComputedSuccess ? "Success" : "Failed";
                         sb.AppendLine("                                        <tr>");
                         sb.AppendLine($"                                            <td>{depot.DepotId}</td>");

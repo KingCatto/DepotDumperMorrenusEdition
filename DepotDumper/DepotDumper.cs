@@ -710,9 +710,11 @@ namespace DepotDumper
                 {
                     manifestSkipped = true;
                     Logger.Info($"Manifest {manifestId} exists for depot {depotId} branch '{branch}', skipping download.");
-                    var branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
+                    string branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
                     Console.WriteLine($"Updating Lua file for existing manifest {manifestId} in branch '{branch}'");
                     await UpdateLuaFileWithDlcAsync(branchLuaFile, appId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
+                    StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, true); // Track skipped
+                    Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} skipped for depot {depotId} branch '{branch}'");
                 }
                 else
                 {
@@ -731,9 +733,11 @@ namespace DepotDumper
                             manifest.SaveToFile(fullManifestPath);
                             manifestDownloaded = true;
                             Logger.Info($"Successfully saved manifest {manifestId} from branch '{branch}' to {fullManifestPath}");
-                            var branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
+                            string branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
                             await UpdateLuaFileWithDlcAsync(branchLuaFile, appId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
                             anyNewManifests = true;
+                            StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, true, false); // Track downloaded
+                            Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} downloaded successfully for depot {depotId} branch '{branch}'");
                         }
                         catch (Exception ex) { string errorMsg = $"Failed to save manifest {manifestId} to file {fullManifestPath}: {ex.Message}"; manifestErrors.Add(errorMsg); Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}"); }
                     }
@@ -741,43 +745,146 @@ namespace DepotDumper
                     {
                         manifestErrors.Add($"Download failed (manifest null) for {manifestId}");
                         Logger.Error($"DownloadManifestAsync returned null for manifest {manifestId}, depot {depotId}, branch '{branch}'.");
+                        StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, null, null, manifestErrors); // Track failure
+                        Logger.Warning($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} download failed for depot {depotId} branch '{branch}'");
                     }
                 }
             }
             catch (Exception ex) { string errorMsg = $"Outer error processing manifest {manifestId}: {ex.Message}"; manifestErrors.Add(errorMsg); Console.WriteLine($"Error processing manifest: {errorMsg}"); Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}"); }
             finally { }
         }
-
         private static async Task<DepotManifest> DownloadManifestAsync(uint depotId, uint appId, ulong manifestId, string branch, CDNClientPool cdnPoolInstance)
         {
-            if (cdnPoolInstance == null) { Logger.Error($"DownloadManifestAsync called with null cdnPoolInstance for manifest {manifestId}, depot {depotId}. Cannot download."); return null; }
-            var cts = new CancellationTokenSource(); cts.CancelAfter(TimeSpan.FromMinutes(5)); Server connection = null;
+            if (cdnPoolInstance == null)
+            {
+                Logger.Error($"DownloadManifestAsync called with null cdnPoolInstance for manifest {manifestId}, depot {depotId}. Cannot download.");
+                return null;
+            }
+
+            var cts = new CancellationTokenSource();
+            cts.CancelAfter(TimeSpan.FromMinutes(5));
+            Server connection = null;
+
             try
             {
-                connection = cdnPoolInstance.GetConnection(cts.Token); if (connection == null) { Console.WriteLine($"Failed to get connection for manifest {manifestId}"); Logger.Warning($"Failed to get CDN connection for manifest {manifestId}"); return null; }
-                ulong manifestRequestCode = 0; var manifestRequestCodeExpiration = DateTime.MinValue; int retryCount = 0; const int maxRetries = 3; TimeSpan[] backoffDelays = { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(10) };
+                connection = cdnPoolInstance.GetConnection(cts.Token);
+                if (connection == null)
+                {
+                    Console.WriteLine($"Failed to get connection for manifest {manifestId}");
+                    Logger.Warning($"Failed to get CDN connection for manifest {manifestId}");
+                    return null;
+                }
+
+                ulong manifestRequestCode = 0;
+                var manifestRequestCodeExpiration = DateTime.MinValue;
+                int retryCount = 0;
+                const int maxRetries = 5;
+                TimeSpan[] backoffDelays = {
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(3),
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(20),
+            TimeSpan.FromSeconds(30)
+        };
+
                 while (retryCount < maxRetries)
                 {
                     try
                     {
-                        cts.Token.ThrowIfCancellationRequested(); string cdnToken = null; if (steam3 != null && steam3.CDNAuthTokens.TryGetValue((depotId, connection.Host), out var authTokenCallbackPromise)) { var result = await authTokenCallbackPromise.Task; cdnToken = result.Token; }
-                        var now = DateTime.Now; if (manifestRequestCode == 0 || now >= manifestRequestCodeExpiration) { if (steam3 == null) { Logger.Error("DownloadManifestAsync: steam3 session is null. Cannot get manifest request code."); throw new InvalidOperationException("Steam3 session is not initialized."); } manifestRequestCode = await steam3.GetDepotManifestRequestCodeAsync(depotId, appId, manifestId, branch); manifestRequestCodeExpiration = now.Add(TimeSpan.FromMinutes(5)); if (manifestRequestCode == 0) { Logger.Warning($"Failed to get manifest request code for {manifestId}"); break; } }
-                        Console.WriteLine("Downloading manifest {0} from {1} with {2}", manifestId, connection, cdnPoolInstance.ProxyServer != null ? cdnPoolInstance.ProxyServer : "no proxy"); if (steam3 == null || !steam3.DepotKeys.TryGetValue(depotId, out var depotKey) || depotKey == null) { Logger.Warning($"No depot key available for depot {depotId} in DownloadManifestAsync"); return null; }
-                        if (cdnPoolInstance.CDNClient == null) { Logger.Error("DownloadManifestAsync: cdnPoolInstance.CDNClient is null. Cannot download manifest."); throw new InvalidOperationException("CDN Client is not initialized within the provided CDN Pool."); }
+                        cts.Token.ThrowIfCancellationRequested();
+                        string cdnToken = null;
+                        if (steam3 != null && steam3.CDNAuthTokens.TryGetValue((depotId, connection.Host), out var authTokenCallbackPromise))
+                        {
+                            var result = await authTokenCallbackPromise.Task;
+                            cdnToken = result.Token;
+                        }
+
+                        var now = DateTime.Now;
+                        if (manifestRequestCode == 0 || now >= manifestRequestCodeExpiration)
+                        {
+                            if (steam3 == null)
+                            {
+                                Logger.Error("DownloadManifestAsync: steam3 session is null. Cannot get manifest request code.");
+                                throw new InvalidOperationException("Steam3 session is not initialized.");
+                            }
+
+                            manifestRequestCode = await steam3.GetDepotManifestRequestCodeAsync(depotId, appId, manifestId, branch);
+                            manifestRequestCodeExpiration = now.Add(TimeSpan.FromMinutes(5));
+                            if (manifestRequestCode == 0)
+                            {
+                                Logger.Warning($"Failed to get manifest request code for {manifestId}");
+                                break;
+                            }
+                        }
+
+                        Console.WriteLine("Downloading manifest {0} from {1} with {2}", manifestId, connection, cdnPoolInstance.ProxyServer != null ? cdnPoolInstance.ProxyServer : "no proxy");
+                        if (steam3 == null || !steam3.DepotKeys.TryGetValue(depotId, out var depotKey) || depotKey == null)
+                        {
+                            Logger.Warning($"No depot key available for depot {depotId} in DownloadManifestAsync");
+                            return null;
+                        }
+
+                        if (cdnPoolInstance.CDNClient == null)
+                        {
+                            Logger.Error("DownloadManifestAsync: cdnPoolInstance.CDNClient is null. Cannot download manifest.");
+                            throw new InvalidOperationException("CDN Client is not initialized within the provided CDN Pool.");
+                        }
+
                         return await cdnPoolInstance.CDNClient.DownloadManifestAsync(depotId, manifestId, manifestRequestCode, connection, depotKey, cdnPoolInstance.ProxyServer, cdnToken);
                     }
                     catch (SteamKitWebRequestException e)
                     {
-                        if (e.StatusCode == HttpStatusCode.Forbidden && steam3 != null && !steam3.CDNAuthTokens.ContainsKey((depotId, connection.Host))) { await steam3.RequestCDNAuthToken(appId, depotId, connection); cdnPoolInstance.ReturnConnection(connection); connection = cdnPoolInstance.GetConnection(cts.Token); if (connection == null) { Logger.Warning("Could not re-establish CDN connection after auth token request."); break; } continue; }
-                        retryCount++; if (retryCount >= maxRetries) { Logger.Error($"Error downloading manifest {manifestId} after {maxRetries} retries: {e.Message}"); break; }
-                        Logger.Warning($"Download attempt {retryCount}/{maxRetries} failed: {e.Message}. Retrying after delay..."); await Task.Delay(backoffDelays[retryCount - 1]);
+                        if (e.StatusCode == HttpStatusCode.Forbidden && steam3 != null && !steam3.CDNAuthTokens.ContainsKey((depotId, connection.Host)))
+                        {
+                            await steam3.RequestCDNAuthToken(appId, depotId, connection);
+                            cdnPoolInstance.ReturnConnection(connection);
+                            connection = cdnPoolInstance.GetConnection(cts.Token);
+                            if (connection == null)
+                            {
+                                Logger.Warning("Could not re-establish CDN connection after auth token request.");
+                                break;
+                            }
+
+                            continue;
+                        }
+
+                        retryCount++;
+                        if (retryCount >= maxRetries)
+                        {
+                            Logger.Error($"Error downloading manifest {manifestId} after {maxRetries} retries: {e.Message}");
+                            break;
+                        }
+
+                        Logger.Warning($"Download attempt {retryCount}/{maxRetries} failed: {e.Message}. Retrying after delay...");
+                        await Task.Delay(backoffDelays[retryCount - 1]);
                     }
-                    catch (OperationCanceledException) { Logger.Warning($"Operation canceled downloading manifest {manifestId}."); break; }
-                    catch (Exception e) { retryCount++; if (retryCount >= maxRetries) { Logger.Error($"Error downloading manifest {manifestId} after {maxRetries} retries: {e.ToString()}"); break; } Logger.Warning($"Retrying download {retryCount}/{maxRetries} due to error: {e.Message}. Retrying after delay..."); await Task.Delay(backoffDelays[retryCount - 1]); }
+                    catch (OperationCanceledException)
+                    {
+                        Logger.Warning($"Operation canceled downloading manifest {manifestId}.");
+                        break;
+                    }
+                    catch (Exception e)
+                    {
+                        retryCount++;
+                        if (retryCount >= maxRetries)
+                        {
+                            Logger.Error($"Error downloading manifest {manifestId} after {maxRetries} retries: {e.ToString()}");
+                            break;
+                        }
+
+                        Logger.Warning($"Retrying download {retryCount}/{maxRetries} due to error: {e.Message}. Retrying after delay...");
+                        await Task.Delay(backoffDelays[retryCount - 1]);
+                    }
                 }
+
                 return null;
             }
-            finally { if (connection != null) cdnPoolInstance.ReturnConnection(connection); cts.Dispose(); }
+            finally
+            {
+                if (connection != null)
+                    cdnPoolInstance.ReturnConnection(connection);
+                cts.Dispose();
+            }
         }
         public static bool IsDlc(uint appId, out uint parentId)
         {
@@ -892,6 +999,9 @@ namespace DepotDumper
                 var tasks = new List<Task>();
                 using var concurrencySemaphore = new SemaphoreSlim(maxConcurrent);
 
+                StatisticsTracker.TrackDepotStart(depotId, appId, manifestsToDump.Count); // Add manifestCount
+                Logger.Debug($"[DumpDepotAsync] Starting dump of depot {depotId} for app {appId}. Manifest count: {manifestsToDump.Count}");
+
                 foreach (var (manifestId, branch) in manifestsToDump)
                 {
                     DateTime manifestDate = defaultDate;
@@ -919,11 +1029,13 @@ namespace DepotDumper
                 await Task.WhenAll(tasks);
                 Console.WriteLine($"Completed processing all manifests for depot {depotId}");
                 Logger.Info($"Completed processing all manifests for depot {depotId}");
+                StatisticsTracker.TrackDepotCompletion(depotId, true); // Assume success if no exception
             }
             catch (Exception e)
             {
                 Console.WriteLine($"Error dumping depot {depotId}: {e.Message}");
                 Logger.Error($"Error dumping depot {depotId}: {e.ToString()}");
+                StatisticsTracker.TrackDepotCompletion(depotId, false, new List<string> { e.Message }); // Track failure
             }
             finally
             {
@@ -955,12 +1067,14 @@ namespace DepotDumper
                 Dictionary<uint, string> appDlcInfo = null;
                 string parentAppName = "Unknown_Parent_App";
                 uint parentAppId = specificAppId;
+                DateTime? appLastUpdated = null;
                 try
                 {
                     await steam3?.RequestAppInfo(specificAppId);
                     var appName = GetAppName(specificAppId);
                     if (string.IsNullOrEmpty(appName)) appName = "Unknown_App";
-                    var (isDlc, resolvedParentAppId) = await DlcDetection.DetectDlcAndParentAsync(steam3, specificAppId);
+                    (bool shouldProcess, appLastUpdated) = await ShouldProcessAppExtendedAsync(specificAppId);
+                    (bool isDlc, uint resolvedParentAppId) = await DlcDetection.DetectDlcAndParentAsync(steam3, specificAppId);
                     parentAppId = resolvedParentAppId;
                     parentAppName = appName;
                     if (isDlc)
@@ -971,24 +1085,26 @@ namespace DepotDumper
                         if (string.IsNullOrEmpty(parentAppName)) parentAppName = "Unknown_Parent_App";
                     }
                     else { parentAppName = appName; }
+
+                    StatisticsTracker.TrackAppStart(parentAppId, parentAppName, appLastUpdated);
+
                     Logger.Debug($"Fetching DLC info for parent app {parentAppId} ('{parentAppName}') once.");
                     appDlcInfo = await GetAppDlcInfoAsync(parentAppId);
                     Logger.Debug($"Fetched {appDlcInfo.Count} DLCs (without depots) for parent app {parentAppId}.");
                     Directory.CreateDirectory(Path.Combine(dumpPath, parentAppId.ToString()));
                     var depots = GetSteam3AppSection(specificAppId, EAppInfoSection.Depots);
-                    if (depots == null || depots == KeyValue.Invalid) { Console.WriteLine("No depots section found for app {0}", specificAppId); Logger.Warning($"No depots section found for app {specificAppId}"); return; }
-                    var (shouldProcess, _) = await ShouldProcessAppExtendedAsync(specificAppId);
-                    if (!shouldProcess) { Console.WriteLine("Skipping app {0}: {1} (detected as non-processed type)", specificAppId, appName); Logger.Info($"Skipping app {specificAppId}: {appName} (detected as non-processed type)"); return; }
-                    DateTime? appLastUpdated = null;
+                    if (depots == null || depots == KeyValue.Invalid) { Console.WriteLine("No depots section found for app {0}", specificAppId); Logger.Warning($"No depots section found for app {specificAppId}"); StatisticsTracker.TrackAppCompletion(parentAppId, true, new List<string> { "No depots found" }); return; }
+                    if (!shouldProcess) { Console.WriteLine("Skipping app {0}: {1} (detected as non-processed type)", specificAppId, appName); Logger.Info($"Skipping app {specificAppId}: {appName} (detected as non-processed type)"); StatisticsTracker.TrackAppCompletion(parentAppId, true, new List<string> { "Skipped (non-processed type)" }); return; }
                     var depotManifestDates = new Dictionary<(uint depotId, string branch), DateTime>();
-                    if (appLastUpdated == null) Console.WriteLine($"Dumping app {specificAppId}: {appName}"); else Console.WriteLine($"Dumping app {specificAppId}: {appName} (Last updated: {appLastUpdated.Value:yyyy-MM-dd HH:mm:ss})");
+                    if (appLastUpdated == null) Console.WriteLine($"Dumping app {specificAppId}: {appName}");
+                    else Console.WriteLine($"Dumping app {specificAppId}: {appName} (Last updated: {appLastUpdated.Value:yyyy-MM-dd HH:mm:ss})");
                     string infoFilePath = Path.Combine(dumpPath, parentAppId.ToString(), $"{specificAppId.ToString()}.{(isDlc ? "dlcinfo" : "info")}");
                     File.WriteAllText(infoFilePath, $"{specificAppId};{appName}{(isDlc ? $";DLC_For_{parentAppId}" : "")}");
                     foreach (var depotSection in depots.Children)
                     {
                         if (!uint.TryParse(depotSection.Name, out uint id) || id == uint.MaxValue || depotSection.Name == "branches" || depotSection.Children.Count == 0) continue;
-                        try { if (!await AccountHasAccessAsync(specificAppId, id)) { Console.WriteLine($"No access to depot {id}, skipping"); continue; } } catch (Exception accessEx) { Console.WriteLine($"Error checking access for depot {id}: {accessEx.Message}"); continue; }
-                        if (select) { Console.WriteLine($"Dump depot {depotSection.Name}? (Press N to skip/any other key to continue)"); if (Console.ReadKey().Key.ToString().Equals("N", StringComparison.OrdinalIgnoreCase)) { Console.WriteLine("\nSkipped."); continue; } Console.WriteLine("\n"); }
+                        try { if (!await AccountHasAccessAsync(specificAppId, id)) { Console.WriteLine($"No access to depot {id}, skipping"); StatisticsTracker.TrackDepotSkipped(id, parentAppId, "No account access"); continue; } } catch (Exception accessEx) { Console.WriteLine($"Error checking access for depot {id}: {accessEx.Message}"); StatisticsTracker.TrackDepotSkipped(id, parentAppId, $"Access check error: {accessEx.Message}"); continue; }
+                        if (select) { Console.WriteLine($"Dump depot {depotSection.Name}? (Press N to skip/any other key to continue)"); if (Console.ReadKey().Key.ToString().Equals("N", StringComparison.OrdinalIgnoreCase)) { Console.WriteLine("\nSkipped."); StatisticsTracker.TrackDepotSkipped(id, parentAppId, "User selected skip"); continue; } Console.WriteLine("\n"); }
                         var currentDepotManifestDates = new Dictionary<(uint depotId, string branch), DateTime>();
                         await DumpDepotAsync(id, parentAppId, dumpPath, currentDepotManifestDates, appLastUpdated, appDlcInfo);
                     }
@@ -1027,12 +1143,24 @@ namespace DepotDumper
                     }
                     await CreateZipsForApp(parentAppId, dumpPath, parentAppName);
                     CleanupEmptyDirectories(dumpPath);
+                    StatisticsTracker.TrackAppCompletion(parentAppId, true);
                 }
-                catch (Exception e) { Console.WriteLine("Error processing specific app {0}: {1}", specificAppId, e.Message); Logger.Error($"Error processing specific app {specificAppId}: {e.ToString()}"); }
+                catch (Exception e)
+                {
+                    Console.WriteLine("Error processing specific app {0}: {1}", specificAppId, e.Message);
+                    Logger.Error($"Error processing specific app {specificAppId}: {e.ToString()}");
+                    StatisticsTracker.TrackAppCompletion(parentAppId, false, new List<string> { e.Message });
+                }
                 return;
             }
 
-            if (steam3.Licenses == null) { return; }
+            if (steam3.Licenses == null)
+            {
+                 Console.WriteLine("Licenses could not be loaded. Cannot process all apps.");
+                 Logger.Error("Licenses could not be loaded. Cannot process all apps.");
+                 return;
+            }
+
             var licenseQuery = steam3.Licenses.Select(x => x.PackageID).Distinct();
             await steam3.RequestPackageInfo(licenseQuery);
             var processedParentApps = new HashSet<uint>();
@@ -1046,105 +1174,181 @@ namespace DepotDumper
                 uint parentAppId = currentAppId;
                 Dictionary<uint, string> appDlcInfo = null;
                 bool processedThisParentGroup = false;
+                DateTime? groupLastUpdated = null;
+                bool groupOverallSuccess = true;
+
                 try
                 {
-                    var (isDlc, resolvedParentAppId) = await DlcDetection.DetectDlcAndParentAsync(steam3, currentAppId);
-                    parentAppId = resolvedParentAppId;
-                    if (processedParentApps.Contains(parentAppId)) { Logger.Debug($"Parent app {parentAppId} already fully processed, skipping check for related app {currentAppId}."); continue; }
-                    branchLastModified.Clear();
-                    processedBranches.Clear();
-                    anyNewManifests = false;
-                    if (parentAppId != currentAppId) await steam3?.RequestAppInfo(parentAppId);
+                    var (isDlcInitial, resolvedParentAppIdInitial) = await DlcDetection.DetectDlcAndParentAsync(steam3, currentAppId);
+                    parentAppId = resolvedParentAppIdInitial;
+
+                    if (processedParentApps.Contains(parentAppId))
+                    {
+                        Logger.Debug($"Parent app {parentAppId} already processed via another owned app check, skipping group initiation for {currentAppId}.");
+                        continue;
+                    }
+
+                    processedParentApps.Add(parentAppId);
+                    processedThisParentGroup = true;
+
+                    await steam3?.RequestAppInfo(parentAppId);
                     parentAppName = GetAppName(parentAppId);
                     if (string.IsNullOrEmpty(parentAppName)) parentAppName = "Unknown_Parent_App";
+                    var (_, parentAppLastUpdated) = await ShouldProcessAppExtendedAsync(parentAppId);
+                    groupLastUpdated = parentAppLastUpdated;
+
+                    StatisticsTracker.TrackAppStart(parentAppId, parentAppName, groupLastUpdated);
                     Logger.Info($"--- Processing Parent Group Start: {parentAppId} ('{parentAppName}') ---");
-                    processedParentApps.Add(parentAppId);
+
                     Directory.CreateDirectory(Path.Combine(dumpPath, parentAppId.ToString()));
+
                     Logger.Debug($"Fetching DLC info for parent app {parentAppId} ('{parentAppName}') once.");
                     appDlcInfo = await GetAppDlcInfoAsync(parentAppId);
                     Logger.Debug($"Fetched {appDlcInfo.Count} DLCs (without depots) for parent app {parentAppId}.");
-                    processedThisParentGroup = true;
+
                     foreach (uint appToCheck in allOwnedAppIds)
                     {
-                        var (appIsDlc, appParentId) = await DlcDetection.DetectDlcAndParentAsync(steam3, appToCheck);
-                        if (appParentId == parentAppId)
+                        var (appIsDlc, appParentIdCheck) = await DlcDetection.DetectDlcAndParentAsync(steam3, appToCheck);
+                        if (appParentIdCheck == parentAppId)
                         {
-                            await ProcessSingleAppWithinGroup(appToCheck, parentAppId, select, dumpPath, appDlcInfo);
+                            var (_, specificAppLastUpdated) = await ShouldProcessAppExtendedAsync(appToCheck);
+                            await ProcessSingleAppWithinGroup(appToCheck, parentAppId, select, dumpPath, appDlcInfo, specificAppLastUpdated);
                         }
                     }
-                    if (processedThisParentGroup)
+
+                    if (appDlcInfo != null && appDlcInfo.Count > 0 && processedBranches.Count > 0)
                     {
-                        if (appDlcInfo != null && appDlcInfo.Count > 0 && processedBranches.Count > 0)
+                        Logger.Info($"Appending {appDlcInfo.Count} DLC entries to Lua files for parent app {parentAppId} across {processedBranches.Count} processed branches.");
+                        var dlcLinesToAdd = new List<string>();
+                        dlcLinesToAdd.Add("");
+                        dlcLinesToAdd.Add("-- Discovered DLCs (without depots)");
+                        foreach (var dlcEntry in appDlcInfo.OrderBy(kvp => kvp.Key)) { dlcLinesToAdd.Add($"addappid({dlcEntry.Key}) -- {dlcEntry.Value}"); }
+                        foreach (var branchName in processedBranches)
                         {
-                            Logger.Info($"Appending {appDlcInfo.Count} DLC entries to Lua files for parent app {parentAppId} across {processedBranches.Count} processed branches.");
-                            var dlcLinesToAdd = new List<string>();
-                            dlcLinesToAdd.Add("");
-                            dlcLinesToAdd.Add("-- Discovered DLCs (without depots)");
-                            foreach (var dlcEntry in appDlcInfo.OrderBy(kvp => kvp.Key)) { dlcLinesToAdd.Add($"addappid({dlcEntry.Key}) -- {dlcEntry.Value}"); }
-                            foreach (var branchName in processedBranches)
+                            string luaFilePath = Path.Combine(dumpPath, parentAppId.ToString(), branchName, $"{parentAppId}.lua");
+                            Logger.Debug($"Checking Lua file for final DLC append: {luaFilePath}");
+                            if (File.Exists(luaFilePath))
                             {
-                                string luaFilePath = Path.Combine(dumpPath, parentAppId.ToString(), branchName, $"{parentAppId}.lua");
-                                Logger.Debug($"Checking Lua file for final DLC append: {luaFilePath}");
-                                if (File.Exists(luaFilePath))
+                                try
                                 {
-                                    try
-                                    {
-                                        List<string> existingLines = File.ReadAllLines(luaFilePath).ToList();
-                                        var dlcLinePrefixes = new HashSet<string>(appDlcInfo.Keys.Select(k => $"addappid({k})"));
-                                        List<string> linesToWrite = existingLines.Where(line => !dlcLinePrefixes.Any(prefix => line.TrimStart().StartsWith(prefix))).ToList();
-                                        linesToWrite.AddRange(dlcLinesToAdd);
-                                        File.WriteAllLines(luaFilePath, linesToWrite);
-                                        Logger.Info($"Successfully appended {appDlcInfo.Count} DLC entries to {Path.GetFileName(luaFilePath)} in branch '{branchName}'.");
-                                    }
-                                    catch (IOException ioEx) { Logger.Error($"IO Error finalizing DLC entries in Lua file {luaFilePath}: {ioEx.Message}"); }
-                                    catch (Exception ex) { Logger.Error($"Error finalizing DLC entries in Lua file {luaFilePath}: {ex.ToString()}"); }
+                                    List<string> existingLines = File.ReadAllLines(luaFilePath).ToList();
+                                    var dlcLinePrefixes = new HashSet<string>(appDlcInfo.Keys.Select(k => $"addappid({k})"));
+                                    List<string> linesToWrite = existingLines.Where(line => !dlcLinePrefixes.Any(prefix => line.TrimStart().StartsWith(prefix))).ToList();
+                                    linesToWrite.AddRange(dlcLinesToAdd);
+                                    File.WriteAllLines(luaFilePath, linesToWrite);
+                                    Logger.Info($"Successfully appended {appDlcInfo.Count} DLC entries to {Path.GetFileName(luaFilePath)} in branch '{branchName}'.");
                                 }
-                                else { Logger.Warning($"Lua file not found for final DLC append: {luaFilePath}. Skipping append for this branch."); }
+                                catch (IOException ioEx) { Logger.Error($"IO Error finalizing DLC entries in Lua file {luaFilePath}: {ioEx.Message}"); groupOverallSuccess = false; }
+                                catch (Exception ex) { Logger.Error($"Error finalizing DLC entries in Lua file {luaFilePath}: {ex.ToString()}"); groupOverallSuccess = false; }
                             }
+                            else { Logger.Warning($"Lua file not found for final DLC append: {luaFilePath}. Skipping append for this branch."); }
                         }
-                        else
-                        {
-                            if (appDlcInfo == null || appDlcInfo.Count == 0) Logger.Info($"No DLCs found or fetched for parent app {parentAppId}, skipping final Lua append step.");
-                            if (processedBranches.Count == 0) Logger.Info($"No branches were processed for parent app {parentAppId}, skipping final Lua append step.");
-                        }
-                        await CreateZipsForApp(parentAppId, dumpPath, parentAppName);
-                        Logger.Info($"--- Processing Parent Group End: {parentAppId} ---");
                     }
+                    else
+                    {
+                        if (appDlcInfo == null || appDlcInfo.Count == 0) Logger.Info($"No DLCs found or fetched for parent app {parentAppId}, skipping final Lua append step.");
+                        if (processedBranches.Count == 0) Logger.Info($"No branches were processed for parent app {parentAppId}, skipping final Lua append step.");
+                    }
+
+                    await CreateZipsForApp(parentAppId, dumpPath, parentAppName);
+                    Logger.Info($"--- Processing Parent Group End: {parentAppId} ---");
+
+                    StatisticsTracker.TrackAppCompletion(parentAppId, groupOverallSuccess);
                 }
-                catch (Exception e) { Console.WriteLine("Error processing app {0} (Parent Context {1}): {2}", currentAppId, parentAppId, e.Message); Logger.Error($"Error processing app {currentAppId} (Parent Context {parentAppId}): {e.ToString()}"); }
+                catch (Exception e)
+                {
+                    Console.WriteLine("Error processing app group (Parent Context {1}): {2}", parentAppId, e.Message);
+                    Logger.Error($"Error processing app group (Parent Context {parentAppId}): {e.ToString()}");
+                    if (processedThisParentGroup && !StatisticsTracker.IsAppTracked(parentAppId))
+                    {
+                         StatisticsTracker.TrackAppStart(parentAppId, parentAppName, groupLastUpdated);
+                    }
+                    StatisticsTracker.TrackAppCompletion(parentAppId, false, new List<string> { $"Group processing error: {e.Message}" });
+                }
             }
             CleanupEmptyDirectories(dumpPath);
         }
-
-        private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint parentAppId, bool select, string dumpPath, Dictionary<uint, string> appDlcInfo)
+private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint parentAppId, bool select, string dumpPath, Dictionary<uint, string> appDlcInfo, DateTime? appLastUpdated)
         {
-            await steam3?.RequestAppInfo(currentAppId);
-            var appName = GetAppName(currentAppId);
-            if (string.IsNullOrEmpty(appName)) appName = "Unknown_App";
-            var (isDlc, _) = await DlcDetection.DetectDlcAndParentAsync(steam3, currentAppId);
-            var (shouldProcessCurrent, _) = await ShouldProcessAppExtendedAsync(currentAppId);
-            if (!shouldProcessCurrent)
+            string appName = $"App {currentAppId}";
+            List<string> currentAppErrors = new List<string>();
+            DateTime startTime = DateTime.Now;
+
+            try
             {
-                Console.WriteLine("Skipping app {0}: {1} (detected as non-processed type)", currentAppId, appName);
-                Logger.Info($"Skipping app {currentAppId}: {appName} (detected as non-processed type)");
-                return;
+                Console.WriteLine($"--- Starting individual processing for AppID: {currentAppId} (Parent: {parentAppId}) ---");
+                Logger.Info($"Starting individual processing for AppID: {currentAppId} (Parent: {parentAppId})");
+
+                await steam3?.RequestAppInfo(currentAppId);
+                appName = GetAppName(currentAppId);
+                if (string.IsNullOrEmpty(appName)) appName = $"Unknown App {currentAppId}";
+
+                var (appIsDlc, _) = await DlcDetection.DetectDlcAndParentAsync(steam3, currentAppId);
+                var (shouldProcessCurrent, _) = await ShouldProcessAppExtendedAsync(currentAppId);
+
+                if (!shouldProcessCurrent)
+                {
+                    Console.WriteLine("Skipping app {0}: {1} (detected as non-processed type)", currentAppId, appName);
+                    Logger.Info($"Skipping app {currentAppId}: {appName} (detected as non-processed type)");
+                    return;
+                }
+
+                var depots = GetSteam3AppSection(currentAppId, EAppInfoSection.Depots);
+                if (depots == null || depots == KeyValue.Invalid)
+                {
+                    Logger.Warning($"No depots section found for app {currentAppId} within group {parentAppId}, skipping its depots.");
+                    return;
+                }
+
+                Console.WriteLine($"Dumping app {currentAppId}: {appName} (Parent Context: {parentAppId})");
+                string infoFilePath = Path.Combine(dumpPath, parentAppId.ToString(), $"{currentAppId.ToString()}.{(appIsDlc ? "dlcinfo" : "info")}");
+                File.WriteAllText(infoFilePath, $"{currentAppId};{appName}{(appIsDlc ? $";DLC_For_{parentAppId}" : "")}");
+
+                foreach (var depotSection in depots.Children)
+                {
+                    if (!uint.TryParse(depotSection.Name, out uint id) || id == uint.MaxValue || depotSection.Name == "branches" || depotSection.Children.Count == 0) continue;
+                    try
+                    {
+                        if (!await AccountHasAccessAsync(currentAppId, id))
+                        {
+                             StatisticsTracker.TrackDepotSkipped(id, parentAppId, "No account access");
+                             continue;
+                        }
+                    }
+                    catch (Exception accessEx)
+                    {
+                         Logger.Warning($"Error checking access for depot {id}: {accessEx.Message}");
+                         StatisticsTracker.TrackDepotSkipped(id, parentAppId, $"Access check error: {accessEx.Message}");
+                         continue;
+                    }
+
+                    if (select)
+                    {
+                        Console.WriteLine($"Dump depot {depotSection.Name} for app {currentAppId}? (Press N to skip/any other key to continue)");
+                        if (Console.ReadKey().Key.ToString().Equals("N", StringComparison.OrdinalIgnoreCase))
+                        {
+                             Console.WriteLine("\nSkipped.");
+                             StatisticsTracker.TrackDepotSkipped(id, parentAppId, "User selected skip");
+                             continue;
+                        }
+                         Console.WriteLine("\n");
+                    }
+                    var currentDepotManifestDates = new Dictionary<(uint depotId, string branch), DateTime>();
+                    await DumpDepotAsync(id, parentAppId, dumpPath, currentDepotManifestDates, appLastUpdated, appDlcInfo);
+                }
             }
-            var depots = GetSteam3AppSection(currentAppId, EAppInfoSection.Depots);
-            if (depots == null || depots == KeyValue.Invalid) { Logger.Warning($"No depots section found for app {currentAppId} within group {parentAppId}, skipping its depots."); return; }
-            DateTime? appLastUpdated = null;
-            Console.WriteLine($"Dumping app {currentAppId}: {appName} (Parent Context: {parentAppId})");
-            string infoFilePath = Path.Combine(dumpPath, parentAppId.ToString(), $"{currentAppId.ToString()}.{(isDlc ? "dlcinfo" : "info")}");
-            File.WriteAllText(infoFilePath, $"{currentAppId};{appName}{(isDlc ? $";DLC_For_{parentAppId}" : "")}");
-            foreach (var depotSection in depots.Children)
+            catch (Exception ex)
             {
-                if (!uint.TryParse(depotSection.Name, out uint id) || id == uint.MaxValue || depotSection.Name == "branches" || depotSection.Children.Count == 0) continue;
-                try { if (!await AccountHasAccessAsync(currentAppId, id)) { continue; } } catch (Exception) { continue; }
-                if (select) { Console.WriteLine($"Dump depot {depotSection.Name} for app {currentAppId}? (Press N to skip/any other key to continue)"); if (Console.ReadKey().Key.ToString().Equals("N", StringComparison.OrdinalIgnoreCase)) { Console.WriteLine("\nSkipped."); continue; } Console.WriteLine("\n"); }
-                var currentDepotManifestDates = new Dictionary<(uint depotId, string branch), DateTime>();
-                await DumpDepotAsync(id, parentAppId, dumpPath, currentDepotManifestDates, appLastUpdated, appDlcInfo);
+                Logger.Error($"Error processing AppID {currentAppId} within group {parentAppId}: {ex.ToString()}");
+                Console.WriteLine($"Error processing AppID {currentAppId}: {ex.Message}");
+            }
+            finally
+            {
+                TimeSpan duration = DateTime.Now - startTime;
+                Console.WriteLine($"--- Finished individual processing for AppID: {currentAppId}. Duration: {duration.TotalSeconds:F2}s ---");
+                Logger.Info($"Finished individual processing for AppID: {currentAppId}. Duration: {duration.TotalSeconds:F2}s");
             }
         }
-
         public static bool InitializeSteam3(string username, string password)
         {
             string loginToken = null;
