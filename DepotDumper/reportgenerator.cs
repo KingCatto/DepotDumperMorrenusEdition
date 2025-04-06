@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization; // Ensure this line exists
+using System.Text.Json.Serialization;
 
 namespace DepotDumper
 {
@@ -16,17 +16,13 @@ namespace DepotDumper
 
             try
             {
-                // Generate and save HTML report
                 string htmlContent = HtmlReportGenerator.GenerateSpaceHtmlReport(summary);
                 File.WriteAllText(Path.Combine(reportsDirectory, "report.html"), htmlContent);
 
-                // Generate and save Text summary
                 SaveTextSummary(summary, Path.Combine(reportsDirectory, "summary.txt"));
 
-                // Generate and save CSV summary
                 SaveAppsCsv(summary, Path.Combine(reportsDirectory, "apps.csv"));
 
-                // Generate and save full JSON report
                 SaveJsonReport(summary, Path.Combine(reportsDirectory, "full_report.json"));
 
                 Console.WriteLine($"All reports saved to {reportsDirectory}");
@@ -45,21 +41,21 @@ namespace DepotDumper
             sb.AppendLine($"End Time: {summary.EndTime}");
             sb.AppendLine($"Duration: {FormatTimeSpan(summary.Duration)}");
             sb.AppendLine();
-            sb.AppendLine($"Apps: {summary.SuccessfulApps} successful, {summary.FailedApps} failed");
-            sb.AppendLine($"Depots: {summary.SuccessfulDepots} successful, {summary.FailedDepots} failed");
-            sb.AppendLine($"Manifests: {summary.NewManifestsDownloaded} downloaded, {summary.ManifestsSkipped} skipped, {summary.FailedManifests} failed");
+            sb.AppendLine($"Apps: {summary.SuccessfulApps} successful, {summary.FailedApps} failed (Total Parent Groups Tracked: {summary.TotalAppsProcessed})"); // Using updated count description
+            sb.AppendLine($"Depots: {summary.SuccessfulDepots} successful, {summary.FailedDepots} failed (Total Depots Tracked: {summary.TotalDepotsProcessed})"); // Using updated count description
+            sb.AppendLine($"Manifests: {summary.NewManifestsDownloaded} downloaded, {summary.ManifestsSkipped} skipped, {summary.FailedManifests} failed (Total Manifests Tracked: {summary.TotalManifestsProcessed})"); // Using updated count description
             sb.AppendLine();
             sb.AppendLine("=== Apps Processed ===");
             foreach (var app in summary.AppSummaries)
             {
                 sb.AppendLine($"App {app.AppId} ({app.AppName}): {(app.ComputedSuccess ? "Success" : "Failed")}");
-                sb.AppendLine($"  Last Updated: {app.LastUpdated?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A"}"); // ADDED LINE
+                sb.AppendLine($"  Last Updated: {app.LastUpdated?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A"}");
                 sb.AppendLine($"  Depots: {app.ProcessedDepots}/{app.TotalDepots} (Skipped: {app.SkippedDepots})");
                 sb.AppendLine($"  Manifests: {app.NewManifests} new, {app.SkippedManifests} skipped");
                 if (app.AppErrors.Count > 0)
                 {
                     sb.AppendLine($"  Errors: {app.AppErrors.Count}");
-                    // Limit displayed errors for brevity
+
                     foreach (var error in app.AppErrors.Take(5))
                     {
                         sb.AppendLine($"    - {error}");
@@ -83,7 +79,7 @@ namespace DepotDumper
                 foreach (var group in errorGroups)
                 {
                     sb.AppendLine($"{group.Key}: {group.Count()} occurrences");
-                    // Show a few examples per group
+
                     foreach (var error in group.Take(3))
                     {
                         sb.AppendLine($"  - {error}");
@@ -102,14 +98,14 @@ namespace DepotDumper
         private static void SaveAppsCsv(OperationSummary summary, string path)
         {
             var sb = new StringBuilder();
-            // Header row
-            sb.AppendLine("AppId,AppName,LastUpdated,TotalDepots,ProcessedDepots,SkippedDepots,NewManifests,SkippedManifests,Status,ErrorCount"); // MODIFIED HEADER
+
+            sb.AppendLine("AppId,AppName,LastUpdated,TotalDepots,ProcessedDepots,SkippedDepots,NewManifests,SkippedManifests,Status,ErrorCount");
 
             foreach (var app in summary.AppSummaries)
             {
                 string statusText = app.ComputedSuccess ? "Success" : "Failed";
-                string lastUpdatedText = app.LastUpdated?.ToString("yyyy-MM-dd HH:mm:ss") ?? ""; // ADDED FORMATTING
-                sb.AppendLine($"{app.AppId},\"{EscapeCsvField(app.AppName)}\",\"{lastUpdatedText}\",{app.TotalDepots},{app.ProcessedDepots},{app.SkippedDepots},{app.NewManifests},{app.SkippedManifests},{statusText},{app.AppErrors.Count}"); // MODIFIED DATA ROW
+                string lastUpdatedText = app.LastUpdated?.ToString("yyyy-MM-dd HH:mm:ss") ?? "";
+                sb.AppendLine($"{app.AppId},\"{EscapeCsvField(app.AppName)}\",\"{lastUpdatedText}\",{app.TotalDepots},{app.ProcessedDepots},{app.SkippedDepots},{app.NewManifests},{app.SkippedManifests},{statusText},{app.AppErrors.Count}");
             }
 
             File.WriteAllText(path, sb.ToString());
@@ -127,7 +123,7 @@ namespace DepotDumper
             File.WriteAllText(path, json);
         }
 
-        // Helper function to categorize errors based on keywords
+
         private static string GetErrorType(string errorMessage)
         {
             if (string.IsNullOrEmpty(errorMessage))
@@ -159,7 +155,7 @@ namespace DepotDumper
             return "Other Error";
         }
 
-        // Helper function to format TimeSpan nicely
+
         public static string FormatTimeSpan(TimeSpan span)
         {
             if (span.TotalDays >= 1)
@@ -168,22 +164,20 @@ namespace DepotDumper
                 return $"{span.Hours}h {span.Minutes}m {span.Seconds}s";
             if (span.TotalMinutes >= 1)
                 return $"{span.Minutes}m {span.Seconds}s";
-            return $"{span.Seconds}.{span.Milliseconds / 10}s"; // Show tenths of a second
+            return $"{span.Seconds}.{span.Milliseconds / 10}s";
         }
 
-        // Helper function to escape fields for CSV format
+
         private static string EscapeCsvField(string field)
         {
             if (string.IsNullOrEmpty(field))
                 return string.Empty;
 
-            // If the field contains a comma, newline, or double quote, enclose it in double quotes
-            // and escape any existing double quotes by doubling them.
             if (field.Contains("\"") || field.Contains(",") || field.Contains("\n"))
             {
-                // Replace existing double quotes with two double quotes
+
                 field = field.Replace("\"", "\"\"");
-                // Enclose the entire field in double quotes
+
                 return $"\"{field}\"";
             }
 

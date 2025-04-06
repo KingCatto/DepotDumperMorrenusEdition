@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq; // Added for Any() method
+using System.Linq;
 using System.Threading;
 
 namespace DepotDumper
@@ -53,7 +53,6 @@ namespace DepotDumper
         {
             lock (Lock)
             {
-                // Check if already tracked to avoid double counting in case of group processing issues
                 if (!appSummaries.ContainsKey(appId))
                 {
                     Interlocked.Increment(ref totalApps);
@@ -74,7 +73,6 @@ namespace DepotDumper
                 }
                 else
                 {
-                    // Update existing summary if needed (e.g., if name/lastUpdated becomes available later)
                     if (appSummaries.TryGetValue(appId, out var existingSummary))
                     {
                         if (existingSummary.AppName != appName && !string.IsNullOrEmpty(appName)) existingSummary.AppName = appName;
@@ -91,10 +89,9 @@ namespace DepotDumper
             {
                 if (appSummaries.TryGetValue(appId, out var summary))
                 {
-                     // Only increment success/fail counts if completion wasn't already recorded
-                     if (summary.Success == null) // Check if completion status is not yet set
+                     if (summary.Success == null)
                      {
-                        summary.Success = success; // Explicitly set success flag
+                        summary.Success = success;
 
                         if (appErrors != null)
                         {
@@ -129,10 +126,9 @@ namespace DepotDumper
             }
         }
 
-        // Method added to fix CS0117
         public static bool IsAppTracked(uint appId)
         {
-            lock (Lock) // Ensure thread safety when accessing the dictionary
+            lock (Lock)
             {
                 return appSummaries.ContainsKey(appId);
             }
@@ -143,7 +139,6 @@ namespace DepotDumper
         {
             lock (Lock)
             {
-                // Only increment totalDepots if this depot isn't already tracked
                 if (!depotSummaries.ContainsKey(depotId))
                 {
                     Interlocked.Increment(ref totalDepots);
@@ -152,13 +147,13 @@ namespace DepotDumper
                         DepotId = depotId,
                         AppId = appId,
                         ManifestsFound = manifestCount,
-                        Success = null // Initialize Success to null
+                        Success = null
                     };
                     depotSummaries[depotId] = summary;
 
                     if (appSummaries.TryGetValue(appId, out var appSummary))
                     {
-                        appSummary.TotalDepots++; // Increment total count on the app
+                        appSummary.TotalDepots++;
                         appSummary.DepotSummaries.Add(summary);
                         Logger.Debug($"[TrackDepotStart] Added DepotSummary for depot {depotId} to AppSummary for app {appId}. DepotSummaries.Count: {appSummary.DepotSummaries.Count}");
                     }
@@ -181,10 +176,9 @@ namespace DepotDumper
             {
                 if (depotSummaries.TryGetValue(depotId, out var summary))
                 {
-                    // Only track completion if not already recorded
                     if (summary.Success == null)
                     {
-                        summary.Success = success; // Explicitly set success flag
+                        summary.Success = success;
 
                         if (depotErrors != null)
                         {
@@ -228,12 +222,10 @@ namespace DepotDumper
             }
         }
 
-        // Corrected version to fix CS0136
         public static void TrackDepotSkipped(uint depotId, uint appId, string reason)
         {
             lock (Lock)
             {
-                // Ensure depot is tracked if skipped before StartDepot might have been called
                 if (!depotSummaries.ContainsKey(depotId))
                 {
                     Interlocked.Increment(ref totalDepots);
@@ -242,15 +234,14 @@ namespace DepotDumper
                         DepotId = depotId,
                         AppId = appId,
                         ManifestsFound = 0,
-                        Success = true // Mark skipped as "successful" processing in terms of errors
+                        Success = true
                     };
                     depotSummaries[depotId] = summary;
-                    // Attempt to add depot summary to the app summary if the app exists
                     if (appSummaries.TryGetValue(appId, out var appSummaryForDepotAdd))
                     {
                          if (!appSummaryForDepotAdd.DepotSummaries.Any(ds => ds.DepotId == depotId))
                          {
-                              appSummaryForDepotAdd.TotalDepots++; // Increment total count on the app
+                              appSummaryForDepotAdd.TotalDepots++;
                               appSummaryForDepotAdd.DepotSummaries.Add(summary);
                          }
                     }
@@ -260,43 +251,38 @@ namespace DepotDumper
                     }
                 }
 
-                // Now, handle updating the app's skipped count
-                if (appSummaries.TryGetValue(appId, out var appSummary)) // Use the existing variable from the outer scope
+                if (appSummaries.TryGetValue(appId, out var appSummary))
                 {
-                    // Only increment skipped count if the depot wasn't already marked as processed/completed
                     if (depotSummaries.TryGetValue(depotId, out var depotSummary) && depotSummary.Success == null)
                     {
                         appSummary.SkippedDepots++;
-                        depotSummary.Success = true; // Mark as processed successfully (skipped isn't a failure)
-                        if (!depotSummary.DepotErrors.Contains($"Skipped: {reason}")) // Avoid duplicate error messages
+                        depotSummary.Success = true;
+                        if (!depotSummary.DepotErrors.Contains($"Skipped: {reason}"))
                         {
-                           depotSummary.DepotErrors.Add($"Skipped: {reason}"); // Add reason as note
+                           depotSummary.DepotErrors.Add($"Skipped: {reason}");
                         }
-                        Interlocked.Increment(ref successfulDepots); // Count skipped as "successful" for stats
+                        Interlocked.Increment(ref successfulDepots);
                         Logger.Info($"[TrackDepotSkipped] Skipped depot {depotId} for app {appId}: {reason}");
                     }
                     else if(depotSummaries.TryGetValue(depotId, out var depotSummaryCheck) && depotSummaryCheck.Success != null)
                     {
-                         // Depot completion was already recorded, don't increment skipped count again
                          Logger.Debug($"[TrackDepotSkipped] Depot {depotId} completion already recorded, skip count not incremented again.");
                     }
                     else
                     {
-                         // Depot summary missing, log warning but don't increment skip count for app
                          Logger.Warning($"[TrackDepotSkipped] DepotSummary {depotId} missing when trying to increment skip count for App {appId}.");
                     }
                 }
                 else
                 {
-                    // This case means TrackAppStart was likely never called for this appId
                     Logger.Warning($"[TrackDepotSkipped] AppSummary {appId} not found when attempting to increment skip count for depot {depotId}.");
                 }
             }
         }
 
-
+        // Ensure this is the correct signature the compiler uses
         public static void TrackManifestProcessing(uint depotId, ulong manifestId, string branch,
-            bool downloaded, bool skipped, string filePath = null, DateTime? lastUpdated = null, List<string> manifestErrors = null)
+            bool downloaded, bool skipped, string filePath = null, List<string> manifestErrors = null, DateTime? manifestCreationTime = null)
         {
             lock (Lock)
             {
@@ -316,14 +302,17 @@ namespace DepotDumper
                     WasDownloaded = downloaded,
                     WasSkipped = skipped,
                     FilePath = filePath,
-                    LastUpdated = lastUpdated,
                     ManifestErrors = manifestErrors ?? new List<string>(),
-                    Success = manifestErrors == null || manifestErrors.Count == 0 // Set Success based on errors
+                    Success = manifestErrors == null || manifestErrors.Count == 0
                 };
 
                 if (depotSummaries.TryGetValue(depotId, out var depotSummary))
                 {
-                    depotSummary.Manifests.Add(manifestSummary);
+                    if (!depotSummary.Manifests.Any(m => m.ManifestId == manifestId && m.Branch == branch))
+                    {
+                         depotSummary.Manifests.Add(manifestSummary);
+                    }
+
                     if (downloaded)
                         depotSummary.ManifestsDownloaded++;
                     if (skipped)
@@ -336,6 +325,12 @@ namespace DepotDumper
                             appSummary.NewManifests++;
                         if (skipped)
                             appSummary.SkippedManifests++;
+
+                        if (manifestCreationTime.HasValue && appSummary.LastUpdated == null)
+                        {
+                            appSummary.LastUpdated = manifestCreationTime.Value;
+                            Logger.Debug($"[TrackManifestProcessing] Updated App {appSummary.AppId} LastUpdated using fallback manifest time: {manifestCreationTime.Value}");
+                        }
                     }
                 }
                  else
@@ -347,7 +342,9 @@ namespace DepotDumper
                 {
                     foreach (var error in manifestErrors)
                     {
-                        errors.Add($"Manifest {depotId}_{manifestId} ({branch}): {error}");
+                        string errorMsg = $"Manifest {depotId}_{manifestId} ({branch}): {error}";
+                        if(!errors.Contains(errorMsg))
+                           errors.Add(errorMsg);
                     }
                 }
 
@@ -406,9 +403,9 @@ namespace DepotDumper
             Console.WriteLine();
             Console.WriteLine("=== Operation Summary ===");
             Console.WriteLine($"Duration: {FormatTimeSpan(summary.Duration)}");
-            Console.WriteLine($"Apps: {summary.SuccessfulApps} successful, {summary.FailedApps} failed (Total Parent Groups Tracked: {summary.TotalAppsProcessed})"); // Modified output
-            Console.WriteLine($"Depots: {summary.SuccessfulDepots} successful, {summary.FailedDepots} failed (Total Depots Tracked: {summary.TotalDepotsProcessed})"); // Modified output
-            Console.WriteLine($"Manifests: {summary.NewManifestsDownloaded} downloaded, {summary.ManifestsSkipped} skipped, {summary.FailedManifests} failed (Total Manifests Tracked: {summary.TotalManifestsProcessed})"); // Modified output
+            Console.WriteLine($"Apps: {summary.SuccessfulApps} successful, {summary.FailedApps} failed (Total Parent Groups Tracked: {summary.TotalAppsProcessed})");
+            Console.WriteLine($"Depots: {summary.SuccessfulDepots} successful, {summary.FailedDepots} failed (Total Depots Tracked: {summary.TotalDepotsProcessed})");
+            Console.WriteLine($"Manifests: {summary.NewManifestsDownloaded} downloaded, {summary.ManifestsSkipped} skipped, {summary.FailedManifests} failed (Total Manifests Tracked: {summary.TotalManifestsProcessed})");
             if (summary.Errors.Count > 0)
             {
                 Console.WriteLine($"Errors: {summary.Errors.Count} errors encountered");

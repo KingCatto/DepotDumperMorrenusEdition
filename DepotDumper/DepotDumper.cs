@@ -13,14 +13,12 @@ using System.Threading.Tasks;
 using SteamKit2;
 using SteamKit2.CDN;
 using static SteamKit2.Internal.CContentBuilder_CommitAppBuild_Request;
-
 namespace DepotDumper
 {
     class DepotDumperException : Exception
     {
         public DepotDumperException(string value) : base(value) { }
     }
-
     public class ConcurrentHashSet<T> : IEnumerable<T>
     {
         private readonly ConcurrentDictionary<T, byte> _dictionary = new ConcurrentDictionary<T, byte>();
@@ -32,7 +30,6 @@ namespace DepotDumper
         public IEnumerator<T> GetEnumerator() => _dictionary.Keys.GetEnumerator();
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
-
     static class DepotDumper
     {
         public const uint INVALID_APP_ID = uint.MaxValue;
@@ -46,13 +43,11 @@ namespace DepotDumper
         private static readonly ConcurrentDictionary<string, DateTime> branchLastModified = new ConcurrentDictionary<string, DateTime>();
         private static readonly ConcurrentHashSet<string> processedBranches = new ConcurrentHashSet<string>();
         private static int anyNewManifestsFlag = 0;
-
         private static bool anyNewManifests
         {
             get => Interlocked.CompareExchange(ref anyNewManifestsFlag, 0, 0) == 1;
             set => Interlocked.Exchange(ref anyNewManifestsFlag, value ? 1 : 0);
         }
-
         private sealed class DepotDumpInfo
         {
             public uint DepotId { get; }
@@ -61,7 +56,6 @@ namespace DepotDumper
             public string Branch { get; }
             public string DumpDir { get; }
             public byte[] DepotKey { get; }
-
             public DepotDumpInfo(uint depotid, uint appId, ulong manifestId, string branch, string DumpDir, byte[] depotKey)
             {
                 DepotId = depotid;
@@ -72,12 +66,10 @@ namespace DepotDumper
                 DepotKey = depotKey;
             }
         }
-
         static async Task<bool> AccountHasAccessAsync(uint appId, uint depotId)
         {
             if (steam3 == null || steam3.steamUser.SteamID == null || (steam3.Licenses == null && steam3.steamUser.SteamID.AccountType != EAccountType.AnonUser))
                 return false;
-
             IEnumerable<uint> licenseQuery;
             if (steam3.steamUser.SteamID.AccountType == EAccountType.AnonUser)
             {
@@ -87,9 +79,7 @@ namespace DepotDumper
             {
                 licenseQuery = steam3.Licenses.Select(x => x.PackageID).Distinct();
             }
-
             await steam3.RequestPackageInfo(licenseQuery);
-
             foreach (var license in licenseQuery)
             {
                 if (steam3.PackageInfo.TryGetValue(license, out var package) && package != null)
@@ -100,12 +90,10 @@ namespace DepotDumper
             }
             return false;
         }
-
         internal static KeyValue GetSteam3AppSection(uint appId, EAppInfoSection section)
         {
             if (steam3 == null || steam3.AppInfo == null || !steam3.AppInfo.TryGetValue(appId, out var app) || app == null)
                 return null;
-
             var appinfo = app.KeyValues;
             var section_key = section switch
             {
@@ -117,7 +105,6 @@ namespace DepotDumper
             };
             return appinfo.Children.FirstOrDefault(c => c.Name == section_key) ?? KeyValue.Invalid;
         }
-
         static async Task<(bool ShouldProcess, DateTime? LastUpdated)> ShouldProcessAppExtendedAsync(uint appId)
         {
             try
@@ -127,20 +114,19 @@ namespace DepotDumper
                 if (!response.IsSuccessStatusCode)
                 {
                     Logger.Warning($"API request failed for ShouldProcessAppExtendedAsync app {appId} with status {response.StatusCode}");
-                    return (true, null);
+                    Logger.Debug($"App {appId}: SteamCMD API call failed with status {response.StatusCode}.");
+                    return (true, null); // Defaulting to shouldProcess=true, lastUpdated=null on API failure
                 }
-
                 string jsonContent = await response.Content.ReadAsStringAsync();
                 using JsonDocument document = JsonDocument.Parse(jsonContent);
                 JsonElement root = document.RootElement;
-
                 if (!root.TryGetProperty("status", out var statusElement) || statusElement.GetString() != "success" ||
                     !root.TryGetProperty("data", out var dataElement) || !dataElement.TryGetProperty(appId.ToString(), out var appElement))
                 {
                     Logger.Warning($"Could not parse API response structure for ShouldProcessAppExtendedAsync app {appId}");
-                    return (true, null);
+                    Logger.Debug($"App {appId}: Failed to parse expected JSON structure from SteamCMD API.");
+                    return (true, null); // Defaulting on parse failure
                 }
-
                 bool shouldProcess = true;
                 if (appElement.TryGetProperty("common", out var commonElement))
                 {
@@ -160,7 +146,6 @@ namespace DepotDumper
                         Logger.Info($"Skipping app {appId} because it appears to be free to download (freetodownload=1).");
                     }
                 }
-
                 DateTime? lastUpdated = null;
                 if (appElement.TryGetProperty("depots", out var depotsElement) &&
                     depotsElement.TryGetProperty("branches", out var branchesElement) &&
@@ -170,22 +155,34 @@ namespace DepotDumper
                     long.TryParse(timeElement.GetString(), out long unixTime))
                 {
                     lastUpdated = DateTimeOffset.FromUnixTimeSeconds(unixTime).DateTime;
-                    Logger.Debug($"App {appId} public branch last updated: {lastUpdated}");
+                    Logger.Debug($"App {appId} public branch last updated from API: {lastUpdated}");
                 }
+                else
+                {
+                    Logger.Debug($"App {appId} public branch 'timeupdated' not found or invalid in API response.");
+                }
+                Logger.Debug($"App {appId}: ShouldProcessAppExtendedAsync returning: shouldProcess={shouldProcess}, lastUpdated={lastUpdated}");
                 return (shouldProcess, lastUpdated);
             }
-            catch (JsonException jsonEx) { Logger.Error($"Error parsing JSON in ShouldProcessAppExtendedAsync for {appId}: {jsonEx.Message}"); return (true, null); }
-            catch (Exception ex) { Logger.Error($"Error in ShouldProcessAppExtendedAsync for {appId}: {ex.Message}"); return (true, null); }
+            catch (JsonException jsonEx)
+            {
+                Logger.Error($"Error parsing JSON in ShouldProcessAppExtendedAsync for {appId}: {jsonEx.Message}");
+                Logger.Debug($"App {appId}: JSON parsing exception in ShouldProcessAppExtendedAsync.");
+                return (true, null);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in ShouldProcessAppExtendedAsync for {appId}: {ex.Message}");
+                Logger.Debug($"App {appId}: Generic exception in ShouldProcessAppExtendedAsync: {ex.GetType().Name}");
+                return (true, null);
+            }
         }
-
         static async Task<ulong> GetSteam3DepotManifestAsync(uint depotId, uint appId, string branch)
         {
             var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
             if (depots == null || depots == KeyValue.Invalid) return INVALID_MANIFEST_ID;
-
             var depotChild = depots[depotId.ToString()];
             if (depotChild == KeyValue.Invalid) return INVALID_MANIFEST_ID;
-
             if (depotChild["manifests"] == KeyValue.Invalid && depotChild["depotfromapp"] != KeyValue.Invalid)
             {
                 uint otherAppId = depotChild["depotfromapp"].AsUnsignedInteger();
@@ -193,20 +190,15 @@ namespace DepotDumper
                 await steam3.RequestAppInfo(otherAppId);
                 return await GetSteam3DepotManifestAsync(depotId, otherAppId, branch);
             }
-
             var manifests = depotChild["manifests"];
             var manifests_encrypted = depotChild["encryptedmanifests"];
-
             if (manifests == KeyValue.Invalid && manifests_encrypted == KeyValue.Invalid) return INVALID_MANIFEST_ID;
-
             KeyValue node = KeyValue.Invalid;
             if (manifests != KeyValue.Invalid) node = manifests[branch];
-
             if (node != KeyValue.Invalid && node["gid"] != KeyValue.Invalid)
             {
                 return node["gid"].AsUnsignedLong();
             }
-
             if (manifests_encrypted != KeyValue.Invalid)
             {
                 var encryptedNode = manifests_encrypted[branch];
@@ -232,16 +224,13 @@ namespace DepotDumper
             Logger.Debug($"No manifest GID found for depot {depotId}, branch '{branch}'");
             return INVALID_MANIFEST_ID;
         }
-
         static async Task<List<(ulong manifestId, string branch)>> GetManifestsToDumpAsync(uint depotId, uint appId)
         {
             var results = new List<(ulong manifestId, string branch)>();
             var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
             if (depots == null || depots == KeyValue.Invalid) return results;
-
             var depotChild = depots[depotId.ToString()];
             if (depotChild == KeyValue.Invalid) return results;
-
             if (depotChild["manifests"] == KeyValue.Invalid && depotChild["depotfromapp"] != KeyValue.Invalid)
             {
                 uint otherAppId = depotChild["depotfromapp"].AsUnsignedInteger();
@@ -249,10 +238,8 @@ namespace DepotDumper
                 await steam3.RequestAppInfo(otherAppId);
                 return await GetManifestsToDumpAsync(depotId, otherAppId);
             }
-
             var manifests = depotChild["manifests"];
             var manifestsEncrypted = depotChild["encryptedmanifests"];
-
             if (manifests != KeyValue.Invalid)
             {
                 foreach (var branchNode in manifests.Children)
@@ -265,7 +252,6 @@ namespace DepotDumper
                     }
                 }
             }
-
             if (manifestsEncrypted != KeyValue.Invalid)
             {
                 foreach (var encryptedBranch in manifestsEncrypted.Children)
@@ -286,13 +272,11 @@ namespace DepotDumper
             }
             return results;
         }
-
         static void CreateZipArchive(string sourceDirectory, string zipFilePath)
         {
             try
             {
                 if (File.Exists(zipFilePath)) File.Delete(zipFilePath);
-
                 if (Directory.Exists(sourceDirectory) && Directory.EnumerateFileSystemEntries(sourceDirectory).Any())
                 {
                     ZipFile.CreateFromDirectory(sourceDirectory, zipFilePath, CompressionLevel.Optimal, false);
@@ -311,22 +295,18 @@ namespace DepotDumper
                 Logger.Error($"Error creating zip archive {zipFilePath}: {ex.ToString()}");
             }
         }
-
         static void DirectoryCopy(string sourceDirName, string destDirName, bool copySubDirs)
         {
             try
             {
                 DirectoryInfo dir = new DirectoryInfo(sourceDirName);
                 if (!dir.Exists) throw new DirectoryNotFoundException($"Source directory not found: {sourceDirName}");
-
                 Directory.CreateDirectory(destDirName);
-
                 foreach (FileInfo file in dir.GetFiles())
                 {
                     try { string tempPath = Path.Combine(destDirName, file.Name); file.CopyTo(tempPath, true); }
                     catch (IOException ioEx) { Logger.Warning($"Error copying file {file.Name}: {ioEx.Message}"); }
                 }
-
                 if (copySubDirs)
                 {
                     foreach (DirectoryInfo subdir in dir.GetDirectories())
@@ -338,25 +318,21 @@ namespace DepotDumper
             }
             catch (Exception ex) { Logger.Error($"Error during directory copy from '{sourceDirName}' to '{destDirName}': {ex.ToString()}"); }
         }
-
         public static string GetAppName(uint appId)
         {
             var info = GetSteam3AppSection(appId, EAppInfoSection.Common);
             return info?["name"]?.Value ?? string.Empty;
         }
-
         static void CleanupOldZipsAndFolders(string path, uint appId, string branchName, string newFolderName)
         {
             try
             {
                 string appFolder = Path.Combine(path, appId.ToString());
                 if (!Directory.Exists(appFolder)) return;
-
                 string searchPattern = $"{appId}.{branchName}.*";
                 var oldFolders = Directory.EnumerateDirectories(appFolder, searchPattern)
                     .Where(folder => !Path.GetFileName(folder).Equals(newFolderName, StringComparison.OrdinalIgnoreCase))
                     .ToList();
-
                 if (oldFolders.Count > 0)
                 {
                     Logger.Info($"Found {oldFolders.Count} older version folders for app {appId}, branch '{branchName}' to clean up.");
@@ -373,7 +349,6 @@ namespace DepotDumper
             }
             catch (Exception ex) { Logger.Error($"Error during cleanup of old folders/zips for {appId}/{branchName}: {ex.ToString()}"); }
         }
-
         static void CleanupEmptyDirectories(string basePath)
         {
             try
@@ -392,7 +367,6 @@ namespace DepotDumper
             }
             catch (Exception ex) { Logger.Error($"Error during directory cleanup: {ex.ToString()}"); }
         }
-
         static void CleanupEmptySubdirectories(string directory)
         {
             try
@@ -409,15 +383,12 @@ namespace DepotDumper
             }
             catch (Exception ex) { Logger.Error($"Error cleaning subdirectories of {directory}: {ex.ToString()}"); }
         }
-
         static bool IsDirectoryEmpty(string path) { try { return !Directory.EnumerateFileSystemEntries(path).Any(); } catch { return false; } }
-
         private static async Task<Dictionary<uint, string>> GetAppDlcInfoAsync(uint appId)
         {
             var dlcAppIds = new Dictionary<uint, string>();
             Logger.Debug($"Starting GetAppDlcInfoAsync for appId: {appId} (Using SteamCMD API ONLY)");
             List<uint> discoveredDlcList = new List<uint>();
-
             try
             {
                 using var httpClient = HttpClientFactory.CreateHttpClient();
@@ -425,41 +396,34 @@ namespace DepotDumper
                 Logger.Debug($"Calling SteamCMD API for base game info: {baseCmdApiUrl}");
                 var baseResponse = await httpClient.GetAsync(baseCmdApiUrl);
                 Logger.Debug($"Base game SteamCMD API response status: {baseResponse.StatusCode}");
-
                 if (!baseResponse.IsSuccessStatusCode)
                 {
                     Logger.Warning($"Base game SteamCMD API request failed for app {appId} with status {baseResponse.StatusCode}");
                     return dlcAppIds;
                 }
-
                 string baseJsonContent = await baseResponse.Content.ReadAsStringAsync();
                 Logger.Debug($"Base game SteamCMD API response content length: {baseJsonContent.Length}");
                 using JsonDocument baseDocument = JsonDocument.Parse(baseJsonContent);
-
                 if (!baseDocument.RootElement.TryGetProperty("status", out var baseStatusElement) || baseStatusElement.GetString() != "success")
                 {
                     Logger.Warning($"Base game ({appId}) SteamCMD response status was not 'success'.");
                     return dlcAppIds;
                 }
-
                 if (!baseDocument.RootElement.TryGetProperty("data", out var baseDataElement))
                 {
                     Logger.Warning($"Base game ({appId}) SteamCMD JSON response missing 'data' property.");
                     return dlcAppIds;
                 }
-
                 if (!baseDataElement.TryGetProperty(appId.ToString(), out var baseAppElement))
                 {
                     Logger.Warning($"Base game ({appId}) SteamCMD JSON response missing 'data.{appId}' property.");
                     return dlcAppIds;
                 }
-
                 if (!baseAppElement.TryGetProperty("extended", out var extendedElement))
                 {
                     Logger.Warning($"Base game ({appId}) SteamCMD JSON response missing 'extended' property.");
                     return dlcAppIds;
                 }
-
                 if (!extendedElement.TryGetProperty("listofdlc", out var listOfDlcElement))
                 {
                     Logger.Debug($"Base game ({appId}) SteamCMD JSON response missing 'listofdlc' property in 'extended'. Game might not have DLC listed via this API.");
@@ -493,9 +457,7 @@ namespace DepotDumper
                         Logger.Debug("The 'listofdlc' string is empty. No DLCs listed.");
                     }
                 }
-
                 Logger.Info($"Found {discoveredDlcList.Count} potential DLCs for app {appId} via SteamCMD API's listofdlc.");
-
                 foreach (var dlcId in discoveredDlcList)
                 {
                     Logger.Debug($"Processing discovered DLC ID: {dlcId}");
@@ -505,17 +467,14 @@ namespace DepotDumper
                         Logger.Debug($"  Calling SteamCMD API for DLC details: {dlcCmdApiUrl}");
                         var dlcResponse = await httpClient.GetAsync(dlcCmdApiUrl);
                         Logger.Debug($"  DLC details SteamCMD API response status: {dlcResponse.StatusCode}");
-
                         if (!dlcResponse.IsSuccessStatusCode)
                         {
                             Logger.Warning($"  SteamCMD API request failed for DLC details {dlcId} with status {dlcResponse.StatusCode}");
                             continue;
                         }
-
                         string dlcJsonContent = await dlcResponse.Content.ReadAsStringAsync();
                         Logger.Debug($"  DLC details SteamCMD API response content length: {dlcJsonContent.Length}");
                         using JsonDocument dlcDocument = JsonDocument.Parse(dlcJsonContent);
-
                         if (!dlcDocument.RootElement.TryGetProperty("status", out var dlcStatusElement) || dlcStatusElement.GetString() != "success" ||
                             !dlcDocument.RootElement.TryGetProperty("data", out var dlcDataElement) || !dlcDataElement.TryGetProperty(dlcId.ToString(), out var dlcAppElement))
                         {
@@ -523,7 +482,6 @@ namespace DepotDumper
                             continue;
                         }
                         Logger.Debug($"  Successfully parsed SteamCMD API response for DLC {dlcId} details");
-
                         bool hasDepots = false;
                         if (dlcAppElement.TryGetProperty("depots", out var dlcDepotsElement))
                         {
@@ -546,14 +504,12 @@ namespace DepotDumper
                         {
                             Logger.Debug($"  DLC {dlcId} response has no 'depots' section. Assuming hasDepots = false");
                         }
-
                         string dlcName = "Unknown DLC";
                         if (dlcAppElement.TryGetProperty("common", out var dlcCommonElement) && dlcCommonElement.TryGetProperty("name", out var dlcNameElement))
                         {
                             dlcName = dlcNameElement.GetString();
                         }
                         Logger.Debug($"  DLC {dlcId} Name: '{dlcName}'");
-
                         if (!hasDepots)
                         {
                             Logger.Debug($"  Adding DLC {dlcId} ('{dlcName}') to list because it has NO depots.");
@@ -570,11 +526,9 @@ namespace DepotDumper
             }
             catch (JsonException jsonEx) { Logger.Error($"Error parsing base game ({appId}) JSON from SteamCMD API: {jsonEx.Message}"); }
             catch (Exception ex) { Logger.Error($"Unexpected error in GetAppDlcInfoAsync (SteamCMD Only) for app {appId}: {ex.ToString()}"); }
-
             Logger.Debug($"Finished GetAppDlcInfoAsync (SteamCMD Only) for appId: {appId}. Returning {dlcAppIds.Count} DLCs (without depots).");
             return dlcAppIds;
         }
-
         private static async Task UpdateLuaFileWithDlcAsync(string filePath, uint appId, uint depotId, string depotKeyHex, ulong manifestId, Dictionary<uint, string> dlcAppIds)
         {
             try
@@ -584,15 +538,12 @@ namespace DepotDumper
                 {
                     Directory.CreateDirectory(directoryPath);
                 }
-
                 bool hasAppId = false;
                 bool hasDepotKey = false;
                 bool hasManifestId = false;
                 string manifestLine = $"setManifestid({depotId}, \"{manifestId}\", 0)";
-
                 List<string> updatedLines = new List<string>();
                 HashSet<string> uniqueLinesTracker = new HashSet<string>(StringComparer.Ordinal);
-
                 if (File.Exists(filePath))
                 {
                     string[] existingLines = File.ReadAllLines(filePath);
@@ -600,19 +551,16 @@ namespace DepotDumper
                     {
                         string trimmedLine = line.Trim();
                         bool isLikelyOldDlc = trimmedLine.StartsWith("addappid(") && !trimmedLine.Contains(",");
-
                         if (string.IsNullOrWhiteSpace(line) || (trimmedLine.StartsWith("--") && !isLikelyOldDlc))
                         {
                             updatedLines.Add(line);
                             continue;
                         }
-
                         if (isLikelyOldDlc)
                         {
                             Logger.Debug($"Skipping existing potential DLC line: {line}");
                             continue;
                         }
-
                         if (trimmedLine.Equals($"addappid({appId})"))
                         {
                             if (uniqueLinesTracker.Add(trimmedLine)) { updatedLines.Add(line); hasAppId = true; }
@@ -641,56 +589,55 @@ namespace DepotDumper
                         }
                     }
                 }
-
                 if (!hasAppId)
                 {
                     string lineToAdd = $"addappid({appId})";
                     if (uniqueLinesTracker.Add(lineToAdd.Trim())) { updatedLines.Insert(0, lineToAdd); Logger.Debug($"Added missing base AppID line: {lineToAdd}"); }
                 }
-
                 if (!hasDepotKey && !string.IsNullOrEmpty(depotKeyHex))
                 {
                     string lineToAdd = $"addappid({depotId}, 1, \"{depotKeyHex}\")";
                     if (uniqueLinesTracker.Add(lineToAdd.Trim())) { updatedLines.Add(lineToAdd); Logger.Debug($"Added missing depot key line: {lineToAdd}"); }
                 }
-
                 if (!hasManifestId)
                 {
                     string lineToAdd = manifestLine;
                     if (uniqueLinesTracker.Add(lineToAdd.Trim())) { updatedLines.Add(lineToAdd); Logger.Debug($"Added missing manifest line: {lineToAdd}"); }
                 }
-
                 File.WriteAllLines(filePath, updatedLines);
             }
             catch (IOException ioEx) { Logger.Error($"IO Error updating Lua file {filePath}: {ioEx.Message}"); }
             catch (Exception ex) { Logger.Error($"Error updating Lua file {filePath}: {ex.ToString()}"); }
             await Task.CompletedTask;
         }
-
         private static async Task ProcessManifestIndividuallyAsync(uint depotId, uint appId, ulong manifestId, string branch, string path, string depotKeyHex, DateTime manifestDate, Dictionary<uint, string> appDlcInfo, CDNClientPool cdnPoolInstance)
         {
             bool manifestDownloaded = false;
             bool manifestSkipped = false;
             List<string> manifestErrors = new List<string>();
             string fullManifestPath = null;
-
-            if (cdnPoolInstance == null) { Logger.Error($"ProcessManifestIndividuallyAsync called with null cdnPoolInstance for manifest {manifestId}, depot {depotId}. Cannot proceed."); manifestErrors.Add("Internal error: CDN Pool instance was null."); return; }
-
+            DepotManifest manifest = null;
+            DateTime definitiveDate = manifestDate; // Initial value
+            Logger.Debug($"Manifest {manifestId} (Depot {depotId}, App {appId}, Branch '{branch}'): Received manifestDate = {manifestDate}, Initial definitiveDate = {definitiveDate}");
+            if (cdnPoolInstance == null)
+            {
+                Logger.Error($"ProcessManifestIndividuallyAsync called with null cdnPoolInstance for manifest {manifestId}, depot {depotId}. Cannot proceed.");
+                manifestErrors.Add("Internal error: CDN Pool instance was null.");
+                StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, null, manifestErrors, null);
+                return;
+            }
             try
             {
                 var cleanBranchName = branch.Replace('/', '_').Replace('\\', '_');
+                // Use the passed appId (which is the effectiveAppId) for path construction
                 var appPath = Path.Combine(path, appId.ToString());
                 var branchPath = Path.Combine(appPath, cleanBranchName);
                 Directory.CreateDirectory(branchPath);
-
-                branchLastModified.AddOrUpdate(cleanBranchName, manifestDate, (key, existingDate) => manifestDate > existingDate ? manifestDate : existingDate);
-                processedBranches.Add(cleanBranchName);
-
-                var manifestFilename = $"{depotId}_{manifestId}.manifest";
+                var manifestFilename = $"{depotId}_{manifestId}.manifest"; // Use actual depotId for filename
                 fullManifestPath = Path.Combine(branchPath, manifestFilename);
-
                 try
                 {
+                    // Clean up old manifests using actual depotId
                     var oldManifestFiles = Directory.GetFiles(branchPath, $"{depotId}_*.manifest");
                     foreach (var oldManifest in oldManifestFiles)
                     {
@@ -703,55 +650,136 @@ namespace DepotDumper
                     }
                 }
                 catch (Exception ex) { Logger.Warning($"Failed to clean up old manifests for depot {depotId} in branch '{cleanBranchName}': {ex.Message}"); }
-
                 bool shouldDownload = !File.Exists(fullManifestPath);
-
                 if (!shouldDownload)
                 {
                     manifestSkipped = true;
                     Logger.Info($"Manifest {manifestId} exists for depot {depotId} branch '{branch}', skipping download.");
-                    string branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
-                    Console.WriteLine($"Updating Lua file for existing manifest {manifestId} in branch '{branch}'");
-                    await UpdateLuaFileWithDlcAsync(branchLuaFile, appId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
-                    StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, true); // Track skipped
-                    Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} skipped for depot {depotId} branch '{branch}'");
-                }
-                else
-                {
-                    DepotManifest manifest = null;
+                    Logger.Debug($"Manifest {manifestId}: Attempting to load existing file: {fullManifestPath}");
                     try
                     {
-                        Logger.Debug($"Attempting download for manifest {manifestId}, depot {depotId}, branch '{branch}'");
-                        manifest = await DownloadManifestAsync(depotId, appId, manifestId, branch, cdnPoolInstance);
+                        // Use actual depotId for loading
+                        manifest = Util.LoadManifestFromFile(branchPath, depotId, manifestId, true);
+                        if (manifest != null)
+                        {
+                            Logger.Debug($"Manifest {manifestId}: Successfully loaded existing file. Manifest.CreationTime = {manifest.CreationTime}");
+                            // Use API date ONLY if it's valid (Year >= 2000) AND newer than manifest creation time
+                            if (manifestDate.Year >= 2000 && manifestDate > manifest.CreationTime)
+                            {
+                                definitiveDate = manifestDate;
+                                Logger.Debug($"Manifest {manifestId}: Using newer API date ({definitiveDate}) over manifest creation time ({manifest.CreationTime}) for skipped manifest.");
+                            }
+                            else
+                            {
+                                // Otherwise, use the manifest's creation time (either API date was invalid or older/same)
+                                definitiveDate = manifest.CreationTime;
+                                Logger.Debug($"Manifest {manifestId}: Using manifest creation time ({definitiveDate}) instead of API date ({manifestDate}) for skipped manifest.");
+                            }
+                            // Use passed appId (effectiveAppId) for Lua file name/path
+                            string branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
+                            Console.WriteLine($"Updating Lua file for existing manifest {manifestId} in branch '{branch}'");
+                            // Pass actual depotId to Lua update function
+                            await UpdateLuaFileWithDlcAsync(branchLuaFile, appId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
+                        }
+                        else
+                        {
+                            manifestErrors.Add($"Failed to load existing manifest file: {fullManifestPath}");
+                            Logger.Warning($"Manifest {manifestId}: Could not load existing manifest {fullManifestPath} (Util.LoadManifestFromFile returned null).");
+                        }
                     }
-                    catch (Exception ex) { string errorMsg = $"Error downloading manifest {manifestId}: {ex.Message}"; manifestErrors.Add(errorMsg); Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}"); }
-
+                    catch (Exception ex)
+                    {
+                        manifestErrors.Add($"Error loading existing manifest {manifestId}: {ex.Message}");
+                        Logger.Error($"Manifest {manifestId}: Exception loading existing manifest {fullManifestPath}: {ex.ToString()}");
+                    }
+                    // Use actual depotId for tracking
+                    StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, true, fullManifestPath, manifestErrors.Count > 0 ? manifestErrors : null, manifest?.CreationTime); // Pass manifest time if loaded
+                    Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} skipped for depot {depotId} branch '{branch}'");
+                }
+                else // Should Download
+                {
+                    try
+                    {
+                        Logger.Debug($"Manifest {manifestId}: Attempting download (Depot {depotId}, App Context {appId})."); // Log which app context is used for download
+                                                                                                                             // Use actual depotId and potentially the original app context (if needed by API, though CDNClientPool uses appId passed to it)
+                        manifest = await DownloadManifestAsync(depotId, appId, manifestId, branch, cdnPoolInstance);
+                        if (manifest != null)
+                            Logger.Debug($"Manifest {manifestId}: Download successful. Manifest.CreationTime = {manifest.CreationTime}");
+                        else
+                            Logger.Warning($"Manifest {manifestId}: Download failed (manifest is null).");
+                    }
+                    catch (Exception ex)
+                    {
+                        string errorMsg = $"Error downloading manifest {manifestId}: {ex.Message}";
+                        manifestErrors.Add(errorMsg);
+                        Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}");
+                    }
                     if (manifest != null)
                     {
                         try
                         {
                             manifest.SaveToFile(fullManifestPath);
                             manifestDownloaded = true;
+                            // Use API date ONLY if it's valid (Year >= 2000) AND newer than manifest creation time
+                            if (manifestDate.Year >= 2000 && manifestDate > manifest.CreationTime)
+                            {
+                                definitiveDate = manifestDate;
+                                Logger.Debug($"Manifest {manifestId}: Using newer API date ({definitiveDate}) over manifest creation time ({manifest.CreationTime}) after download.");
+                            }
+                            else
+                            {
+                                // Otherwise, use the manifest's creation time (either API date was invalid or older/same)
+                                definitiveDate = manifest.CreationTime;
+                                Logger.Debug($"Manifest {manifestId}: Using manifest creation time ({definitiveDate}) instead of API date ({manifestDate}) after download.");
+                            }
                             Logger.Info($"Successfully saved manifest {manifestId} from branch '{branch}' to {fullManifestPath}");
+                            // Use passed appId (effectiveAppId) for Lua file name/path
                             string branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
+                            // Pass actual depotId to Lua update function
                             await UpdateLuaFileWithDlcAsync(branchLuaFile, appId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
                             anyNewManifests = true;
-                            StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, true, false); // Track downloaded
+                            // Use actual depotId for tracking
+                            StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, true, false, fullManifestPath, null, manifest.CreationTime);
                             Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} downloaded successfully for depot {depotId} branch '{branch}'");
                         }
-                        catch (Exception ex) { string errorMsg = $"Failed to save manifest {manifestId} to file {fullManifestPath}: {ex.Message}"; manifestErrors.Add(errorMsg); Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}"); }
+                        catch (Exception ex)
+                        {
+                            string errorMsg = $"Failed to save manifest {manifestId} to file {fullManifestPath}: {ex.Message}";
+                            manifestErrors.Add(errorMsg);
+                            Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}");
+                            // Use actual depotId for tracking
+                            StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, fullManifestPath, manifestErrors, null);
+                        }
                     }
-                    else
+                    else // Manifest is null after download attempt
                     {
                         manifestErrors.Add($"Download failed (manifest null) for {manifestId}");
                         Logger.Error($"DownloadManifestAsync returned null for manifest {manifestId}, depot {depotId}, branch '{branch}'.");
-                        StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, null, null, manifestErrors); // Track failure
+                        // Use actual depotId for tracking
+                        StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, null, manifestErrors, null);
                         Logger.Warning($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} download failed for depot {depotId} branch '{branch}'");
                     }
                 }
+                Logger.Debug($"Manifest {manifestId} (Depot {depotId}, Branch '{branch}'): Final definitiveDate before AddOrUpdate = {definitiveDate}");
+                branchLastModified.AddOrUpdate(cleanBranchName, definitiveDate, (key, existingDate) =>
+                {
+                    Logger.Debug($"Manifest {manifestId}: Updating branch '{key}'. ExistingDate={existingDate}, NewDate={definitiveDate}. Using {(definitiveDate > existingDate ? definitiveDate : existingDate)}");
+                    return definitiveDate > existingDate ? definitiveDate : existingDate; // Use the later date
+                });
+                processedBranches.Add(cleanBranchName);
             }
-            catch (Exception ex) { string errorMsg = $"Outer error processing manifest {manifestId}: {ex.Message}"; manifestErrors.Add(errorMsg); Console.WriteLine($"Error processing manifest: {errorMsg}"); Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}"); }
-            finally { }
+            catch (Exception ex)
+            {
+                string errorMsg = $"Outer error processing manifest {manifestId}: {ex.Message}";
+                manifestErrors.Add(errorMsg);
+                Console.WriteLine($"Error processing manifest: {errorMsg}");
+                Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}");
+                if (!manifestDownloaded && !manifestSkipped)
+                {
+                    // Use actual depotId for tracking
+                    StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, null, manifestErrors, null);
+                }
+            }
         }
         private static async Task<DepotManifest> DownloadManifestAsync(uint depotId, uint appId, ulong manifestId, string branch, CDNClientPool cdnPoolInstance)
         {
@@ -760,11 +788,9 @@ namespace DepotDumper
                 Logger.Error($"DownloadManifestAsync called with null cdnPoolInstance for manifest {manifestId}, depot {depotId}. Cannot download.");
                 return null;
             }
-
             var cts = new CancellationTokenSource();
             cts.CancelAfter(TimeSpan.FromMinutes(5));
             Server connection = null;
-
             try
             {
                 connection = cdnPoolInstance.GetConnection(cts.Token);
@@ -774,7 +800,6 @@ namespace DepotDumper
                     Logger.Warning($"Failed to get CDN connection for manifest {manifestId}");
                     return null;
                 }
-
                 ulong manifestRequestCode = 0;
                 var manifestRequestCodeExpiration = DateTime.MinValue;
                 int retryCount = 0;
@@ -786,7 +811,6 @@ namespace DepotDumper
             TimeSpan.FromSeconds(20),
             TimeSpan.FromSeconds(30)
         };
-
                 while (retryCount < maxRetries)
                 {
                     try
@@ -798,7 +822,6 @@ namespace DepotDumper
                             var result = await authTokenCallbackPromise.Task;
                             cdnToken = result.Token;
                         }
-
                         var now = DateTime.Now;
                         if (manifestRequestCode == 0 || now >= manifestRequestCodeExpiration)
                         {
@@ -807,7 +830,6 @@ namespace DepotDumper
                                 Logger.Error("DownloadManifestAsync: steam3 session is null. Cannot get manifest request code.");
                                 throw new InvalidOperationException("Steam3 session is not initialized.");
                             }
-
                             manifestRequestCode = await steam3.GetDepotManifestRequestCodeAsync(depotId, appId, manifestId, branch);
                             manifestRequestCodeExpiration = now.Add(TimeSpan.FromMinutes(5));
                             if (manifestRequestCode == 0)
@@ -816,20 +838,17 @@ namespace DepotDumper
                                 break;
                             }
                         }
-
                         Console.WriteLine("Downloading manifest {0} from {1} with {2}", manifestId, connection, cdnPoolInstance.ProxyServer != null ? cdnPoolInstance.ProxyServer : "no proxy");
                         if (steam3 == null || !steam3.DepotKeys.TryGetValue(depotId, out var depotKey) || depotKey == null)
                         {
                             Logger.Warning($"No depot key available for depot {depotId} in DownloadManifestAsync");
                             return null;
                         }
-
                         if (cdnPoolInstance.CDNClient == null)
                         {
                             Logger.Error("DownloadManifestAsync: cdnPoolInstance.CDNClient is null. Cannot download manifest.");
                             throw new InvalidOperationException("CDN Client is not initialized within the provided CDN Pool.");
                         }
-
                         return await cdnPoolInstance.CDNClient.DownloadManifestAsync(depotId, manifestId, manifestRequestCode, connection, depotKey, cdnPoolInstance.ProxyServer, cdnToken);
                     }
                     catch (SteamKitWebRequestException e)
@@ -844,17 +863,14 @@ namespace DepotDumper
                                 Logger.Warning("Could not re-establish CDN connection after auth token request.");
                                 break;
                             }
-
                             continue;
                         }
-
                         retryCount++;
                         if (retryCount >= maxRetries)
                         {
                             Logger.Error($"Error downloading manifest {manifestId} after {maxRetries} retries: {e.Message}");
                             break;
                         }
-
                         Logger.Warning($"Download attempt {retryCount}/{maxRetries} failed: {e.Message}. Retrying after delay...");
                         await Task.Delay(backoffDelays[retryCount - 1]);
                     }
@@ -871,12 +887,10 @@ namespace DepotDumper
                             Logger.Error($"Error downloading manifest {manifestId} after {maxRetries} retries: {e.ToString()}");
                             break;
                         }
-
                         Logger.Warning($"Retrying download {retryCount}/{maxRetries} due to error: {e.Message}. Retrying after delay...");
                         await Task.Delay(backoffDelays[retryCount - 1]);
                     }
                 }
-
                 return null;
             }
             finally
@@ -889,17 +903,14 @@ namespace DepotDumper
         public static bool IsDlc(uint appId, out uint parentId)
         {
             parentId = appId; // Default to self
-
             try
             {
                 string appPath = Path.Combine(Config.DumpDirectory ?? DEFAULT_DUMP_DIR, appId.ToString());
                 string dlcInfoPath = Path.Combine(appPath, $"{appId}.dlcinfo");
-
                 if (File.Exists(dlcInfoPath))
                 {
                     string content = File.ReadAllText(dlcInfoPath);
                     string[] parts = content.Split(';');
-
                     if (parts.Length >= 3 && parts[2].StartsWith("DLC_For_"))
                     {
                         string parentIdStr = parts[2].Substring("DLC_For_".Length);
@@ -915,14 +926,12 @@ namespace DepotDumper
             {
                 Logger.Warning($"Error reading DLC info file for {appId}: {ex.Message}");
             }
-
             return false;
         }
         static async Task DumpDepotAsync(uint depotId, uint appId, string path, Dictionary<(uint depotId, string branch), DateTime> manifestDates, DateTime? appLastUpdated = null, Dictionary<uint, string> appDlcInfo = null)
         {
             appDlcInfo ??= new Dictionary<uint, string>();
             CDNClientPool currentCdnPool = null;
-
             try
             {
                 // Check if this is a DLC and get parent app ID
@@ -932,25 +941,23 @@ namespace DepotDumper
                     effectiveAppId = parentAppId;
                     Logger.Info($"Using parent app {parentAppId} directory for DLC {appId} manifests");
                 }
-
                 currentCdnPool = new CDNClientPool(steam3, appId);
                 await steam3.RequestDepotKey(depotId, appId);
                 if (!steam3.DepotKeys.TryGetValue(depotId, out var depotKey))
                 {
                     Console.WriteLine("No valid depot key for {0} (App Context: {1}).", depotId, appId);
                     Logger.Warning($"No valid depot key for Depot {depotId} (App Context: {appId}).");
+                    StatisticsTracker.TrackDepotSkipped(depotId, effectiveAppId, "Missing depot key"); // Use effectiveAppId for tracking
                     return;
                 }
                 var manifestsToDump = await GetManifestsToDumpAsync(depotId, appId);
                 Logger.Info($"Starting to process depot {depotId} for app context {appId}");
                 Console.WriteLine($"Starting to process depot {depotId} for app context {appId}");
                 string depotKeyHex = string.Concat(depotKey.Select(b => b.ToString("X2")).ToArray());
-
                 // Use the effective app ID (parent app ID for DLCs) for paths
                 string appDumpPath = Path.Combine(path, effectiveAppId.ToString());
                 Directory.CreateDirectory(appDumpPath);
-                var keyFilePath = Path.Combine(appDumpPath, $"{effectiveAppId.ToString()}.key");
-
+                var keyFilePath = Path.Combine(appDumpPath, $"{effectiveAppId.ToString()}.key"); // Use effectiveAppId for key file name
                 bool keyExists = false;
                 if (File.Exists(keyFilePath))
                 {
@@ -964,7 +971,6 @@ namespace DepotDumper
                         Logger.Warning($"Could not read key file {keyFilePath}: {ex.Message}");
                     }
                 }
-
                 if (!keyExists)
                 {
                     try
@@ -983,40 +989,39 @@ namespace DepotDumper
                     Console.WriteLine("Using existing depot {0} key", depotId);
                     Logger.Debug($"Key for Depot {depotId} already exists in {keyFilePath}");
                 }
-
                 if (manifestsToDump.Count == 0)
                 {
                     Console.WriteLine("No accessible manifests found for depot {0}.", depotId);
                     Logger.Warning($"No accessible manifests found for depot {depotId} (App Context: {appId}).");
+                    StatisticsTracker.TrackDepotCompletion(depotId, true); // Track as complete, but with no manifests
                     return;
                 }
-
                 DateTime defaultDate = appLastUpdated ?? DateTime.Now;
+                Logger.Debug($"Depot {depotId} (App {appId}): appLastUpdated = {appLastUpdated}, defaultDate set to: {defaultDate}");
                 int maxConcurrent = Config.MaxDownloads > 0 ? Config.MaxDownloads : 4;
                 Console.WriteLine($"Processing {manifestsToDump.Count} manifests for depot {depotId} with up to {maxConcurrent} at a time");
                 Logger.Info($"Processing {manifestsToDump.Count} manifests for depot {depotId} with up to {maxConcurrent} at a time");
-
                 var tasks = new List<Task>();
                 using var concurrencySemaphore = new SemaphoreSlim(maxConcurrent);
-
-                StatisticsTracker.TrackDepotStart(depotId, appId, manifestsToDump.Count); // Add manifestCount
-                Logger.Debug($"[DumpDepotAsync] Starting dump of depot {depotId} for app {appId}. Manifest count: {manifestsToDump.Count}");
-
+                StatisticsTracker.TrackDepotStart(depotId, effectiveAppId, manifestsToDump.Count); // Use effectiveAppId
+                Logger.Debug($"[DumpDepotAsync] Starting dump of depot {depotId} for app {effectiveAppId}. Manifest count: {manifestsToDump.Count}"); // Use effectiveAppId
                 foreach (var (manifestId, branch) in manifestsToDump)
                 {
-                    DateTime manifestDate = defaultDate;
+                    DateTime manifestDate = defaultDate; // Start with the default date derived from appLastUpdated or Now
+                    // NOTE: The manifestDates dictionary passed in is currently unused in the calling code (DumpAppAsync).
+                    // If it were used, this would potentially override the defaultDate.
                     if (manifestDates != null && manifestDates.TryGetValue((depotId, branch), out DateTime specificDate))
                     {
                         manifestDate = specificDate;
+                        Logger.Debug($"Depot {depotId}, Branch '{branch}': Using specific date from manifestDates dictionary: {manifestDate}");
                     }
-
                     await concurrencySemaphore.WaitAsync();
-
                     // Pass the effective app ID to ensure DLC manifests go to parent app folder
                     tasks.Add(Task.Run(async () =>
                     {
                         try
                         {
+                            // Pass effectiveAppId for pathing, depotId for actual depot operations, manifestDate derived above
                             await ProcessManifestIndividuallyAsync(depotId, effectiveAppId, manifestId, branch, path, depotKeyHex, manifestDate, appDlcInfo, currentCdnPool);
                         }
                         finally
@@ -1025,11 +1030,10 @@ namespace DepotDumper
                         }
                     }));
                 }
-
                 await Task.WhenAll(tasks);
                 Console.WriteLine($"Completed processing all manifests for depot {depotId}");
                 Logger.Info($"Completed processing all manifests for depot {depotId}");
-                StatisticsTracker.TrackDepotCompletion(depotId, true); // Assume success if no exception
+                StatisticsTracker.TrackDepotCompletion(depotId, true); // Assume success if no major exception bubbled up
             }
             catch (Exception e)
             {
@@ -1042,7 +1046,6 @@ namespace DepotDumper
                 currentCdnPool?.Shutdown();
             }
         }
-
         public static async Task DumpAppAsync(bool select, uint specificAppId = INVALID_APP_ID)
         {
             var dumpPath = string.IsNullOrWhiteSpace(Config.DumpDirectory) ? DEFAULT_DUMP_DIR : Config.DumpDirectory;
@@ -1058,7 +1061,6 @@ namespace DepotDumper
                     return;
                 }
             }
-
             if (specificAppId != INVALID_APP_ID)
             {
                 branchLastModified.Clear();
@@ -1085,9 +1087,7 @@ namespace DepotDumper
                         if (string.IsNullOrEmpty(parentAppName)) parentAppName = "Unknown_Parent_App";
                     }
                     else { parentAppName = appName; }
-
                     StatisticsTracker.TrackAppStart(parentAppId, parentAppName, appLastUpdated);
-
                     Logger.Debug($"Fetching DLC info for parent app {parentAppId} ('{parentAppName}') once.");
                     appDlcInfo = await GetAppDlcInfoAsync(parentAppId);
                     Logger.Debug($"Fetched {appDlcInfo.Count} DLCs (without depots) for parent app {parentAppId}.");
@@ -1153,21 +1153,18 @@ namespace DepotDumper
                 }
                 return;
             }
-
             if (steam3.Licenses == null)
             {
-                 Console.WriteLine("Licenses could not be loaded. Cannot process all apps.");
-                 Logger.Error("Licenses could not be loaded. Cannot process all apps.");
-                 return;
+                Console.WriteLine("Licenses could not be loaded. Cannot process all apps.");
+                Logger.Error("Licenses could not be loaded. Cannot process all apps.");
+                return;
             }
-
             var licenseQuery = steam3.Licenses.Select(x => x.PackageID).Distinct();
             await steam3.RequestPackageInfo(licenseQuery);
             var processedParentApps = new HashSet<uint>();
             var allOwnedAppIds = new HashSet<uint>();
             foreach (var license in licenseQuery.Where(l => l != 0)) { if (steam3.PackageInfo.TryGetValue(license, out var package) && package != null) { foreach (var appIdKV in package.KeyValues["appids"].Children) { allOwnedAppIds.Add(appIdKV.AsUnsignedInteger()); } } }
             Logger.Info($"Found {allOwnedAppIds.Count} unique owned AppIDs across all licenses.");
-
             foreach (uint currentAppId in allOwnedAppIds)
             {
                 string parentAppName = "Unknown_Parent_App";
@@ -1176,36 +1173,28 @@ namespace DepotDumper
                 bool processedThisParentGroup = false;
                 DateTime? groupLastUpdated = null;
                 bool groupOverallSuccess = true;
-
                 try
                 {
                     var (isDlcInitial, resolvedParentAppIdInitial) = await DlcDetection.DetectDlcAndParentAsync(steam3, currentAppId);
                     parentAppId = resolvedParentAppIdInitial;
-
                     if (processedParentApps.Contains(parentAppId))
                     {
                         Logger.Debug($"Parent app {parentAppId} already processed via another owned app check, skipping group initiation for {currentAppId}.");
                         continue;
                     }
-
                     processedParentApps.Add(parentAppId);
                     processedThisParentGroup = true;
-
                     await steam3?.RequestAppInfo(parentAppId);
                     parentAppName = GetAppName(parentAppId);
                     if (string.IsNullOrEmpty(parentAppName)) parentAppName = "Unknown_Parent_App";
                     var (_, parentAppLastUpdated) = await ShouldProcessAppExtendedAsync(parentAppId);
                     groupLastUpdated = parentAppLastUpdated;
-
                     StatisticsTracker.TrackAppStart(parentAppId, parentAppName, groupLastUpdated);
                     Logger.Info($"--- Processing Parent Group Start: {parentAppId} ('{parentAppName}') ---");
-
                     Directory.CreateDirectory(Path.Combine(dumpPath, parentAppId.ToString()));
-
                     Logger.Debug($"Fetching DLC info for parent app {parentAppId} ('{parentAppName}') once.");
                     appDlcInfo = await GetAppDlcInfoAsync(parentAppId);
                     Logger.Debug($"Fetched {appDlcInfo.Count} DLCs (without depots) for parent app {parentAppId}.");
-
                     foreach (uint appToCheck in allOwnedAppIds)
                     {
                         var (appIsDlc, appParentIdCheck) = await DlcDetection.DetectDlcAndParentAsync(steam3, appToCheck);
@@ -1215,7 +1204,6 @@ namespace DepotDumper
                             await ProcessSingleAppWithinGroup(appToCheck, parentAppId, select, dumpPath, appDlcInfo, specificAppLastUpdated);
                         }
                     }
-
                     if (appDlcInfo != null && appDlcInfo.Count > 0 && processedBranches.Count > 0)
                     {
                         Logger.Info($"Appending {appDlcInfo.Count} DLC entries to Lua files for parent app {parentAppId} across {processedBranches.Count} processed branches.");
@@ -1249,10 +1237,8 @@ namespace DepotDumper
                         if (appDlcInfo == null || appDlcInfo.Count == 0) Logger.Info($"No DLCs found or fetched for parent app {parentAppId}, skipping final Lua append step.");
                         if (processedBranches.Count == 0) Logger.Info($"No branches were processed for parent app {parentAppId}, skipping final Lua append step.");
                     }
-
                     await CreateZipsForApp(parentAppId, dumpPath, parentAppName);
                     Logger.Info($"--- Processing Parent Group End: {parentAppId} ---");
-
                     StatisticsTracker.TrackAppCompletion(parentAppId, groupOverallSuccess);
                 }
                 catch (Exception e)
@@ -1261,49 +1247,42 @@ namespace DepotDumper
                     Logger.Error($"Error processing app group (Parent Context {parentAppId}): {e.ToString()}");
                     if (processedThisParentGroup && !StatisticsTracker.IsAppTracked(parentAppId))
                     {
-                         StatisticsTracker.TrackAppStart(parentAppId, parentAppName, groupLastUpdated);
+                        StatisticsTracker.TrackAppStart(parentAppId, parentAppName, groupLastUpdated);
                     }
                     StatisticsTracker.TrackAppCompletion(parentAppId, false, new List<string> { $"Group processing error: {e.Message}" });
                 }
             }
             CleanupEmptyDirectories(dumpPath);
         }
-private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint parentAppId, bool select, string dumpPath, Dictionary<uint, string> appDlcInfo, DateTime? appLastUpdated)
+        private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint parentAppId, bool select, string dumpPath, Dictionary<uint, string> appDlcInfo, DateTime? appLastUpdated)
         {
             string appName = $"App {currentAppId}";
             List<string> currentAppErrors = new List<string>();
             DateTime startTime = DateTime.Now;
-
             try
             {
                 Console.WriteLine($"--- Starting individual processing for AppID: {currentAppId} (Parent: {parentAppId}) ---");
                 Logger.Info($"Starting individual processing for AppID: {currentAppId} (Parent: {parentAppId})");
-
                 await steam3?.RequestAppInfo(currentAppId);
                 appName = GetAppName(currentAppId);
                 if (string.IsNullOrEmpty(appName)) appName = $"Unknown App {currentAppId}";
-
                 var (appIsDlc, _) = await DlcDetection.DetectDlcAndParentAsync(steam3, currentAppId);
                 var (shouldProcessCurrent, _) = await ShouldProcessAppExtendedAsync(currentAppId);
-
                 if (!shouldProcessCurrent)
                 {
                     Console.WriteLine("Skipping app {0}: {1} (detected as non-processed type)", currentAppId, appName);
                     Logger.Info($"Skipping app {currentAppId}: {appName} (detected as non-processed type)");
                     return;
                 }
-
                 var depots = GetSteam3AppSection(currentAppId, EAppInfoSection.Depots);
                 if (depots == null || depots == KeyValue.Invalid)
                 {
                     Logger.Warning($"No depots section found for app {currentAppId} within group {parentAppId}, skipping its depots.");
                     return;
                 }
-
                 Console.WriteLine($"Dumping app {currentAppId}: {appName} (Parent Context: {parentAppId})");
                 string infoFilePath = Path.Combine(dumpPath, parentAppId.ToString(), $"{currentAppId.ToString()}.{(appIsDlc ? "dlcinfo" : "info")}");
                 File.WriteAllText(infoFilePath, $"{currentAppId};{appName}{(appIsDlc ? $";DLC_For_{parentAppId}" : "")}");
-
                 foreach (var depotSection in depots.Children)
                 {
                     if (!uint.TryParse(depotSection.Name, out uint id) || id == uint.MaxValue || depotSection.Name == "branches" || depotSection.Children.Count == 0) continue;
@@ -1311,27 +1290,26 @@ private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint pa
                     {
                         if (!await AccountHasAccessAsync(currentAppId, id))
                         {
-                             StatisticsTracker.TrackDepotSkipped(id, parentAppId, "No account access");
-                             continue;
+                            StatisticsTracker.TrackDepotSkipped(id, parentAppId, "No account access");
+                            continue;
                         }
                     }
                     catch (Exception accessEx)
                     {
-                         Logger.Warning($"Error checking access for depot {id}: {accessEx.Message}");
-                         StatisticsTracker.TrackDepotSkipped(id, parentAppId, $"Access check error: {accessEx.Message}");
-                         continue;
+                        Logger.Warning($"Error checking access for depot {id}: {accessEx.Message}");
+                        StatisticsTracker.TrackDepotSkipped(id, parentAppId, $"Access check error: {accessEx.Message}");
+                        continue;
                     }
-
                     if (select)
                     {
                         Console.WriteLine($"Dump depot {depotSection.Name} for app {currentAppId}? (Press N to skip/any other key to continue)");
                         if (Console.ReadKey().Key.ToString().Equals("N", StringComparison.OrdinalIgnoreCase))
                         {
-                             Console.WriteLine("\nSkipped.");
-                             StatisticsTracker.TrackDepotSkipped(id, parentAppId, "User selected skip");
-                             continue;
+                            Console.WriteLine("\nSkipped.");
+                            StatisticsTracker.TrackDepotSkipped(id, parentAppId, "User selected skip");
+                            continue;
                         }
-                         Console.WriteLine("\n");
+                        Console.WriteLine("\n");
                     }
                     var currentDepotManifestDates = new Dictionary<(uint depotId, string branch), DateTime>();
                     await DumpDepotAsync(id, parentAppId, dumpPath, currentDepotManifestDates, appLastUpdated, appDlcInfo);
@@ -1354,21 +1332,17 @@ private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint pa
             string loginToken = null;
             if (username != null && Config.RememberPassword)
                 _ = AccountSettingsStore.Instance.LoginTokens.TryGetValue(username, out loginToken);
-
             steam3 = new Steam3Session(new SteamUser.LogOnDetails { Username = username, Password = loginToken == null ? password : null, ShouldRememberPassword = Config.RememberPassword, AccessToken = loginToken, LoginID = Config.LoginID ?? 0x534B32, });
-
             if (!steam3.WaitForCredentials())
             {
                 Console.WriteLine("Unable to get steam3 credentials.");
                 Logger.Error("Unable to get steam3 credentials.");
                 return false;
             }
-
             Logger.Info("Steam3 credentials obtained successfully.");
             Task.Run(steam3.TickCallbacks);
             return true;
         }
-
         public static void ShutdownSteam3()
         {
             if (steam3 == null) return;
@@ -1377,7 +1351,6 @@ private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint pa
             steam3 = null;
             Logger.Info("Steam3 disconnected.");
         }
-
         static async Task CreateZipsForApp(uint appId, string path, string appName)
         {
             if (processedBranches.Count == 0)
@@ -1386,41 +1359,43 @@ private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint pa
                 Logger.Info($"No branches processed for app {appId} ('{appName}'), skipping zip creation.");
                 return;
             }
-
             Console.WriteLine($"Creating zip archives for {processedBranches.Count} branches of app {appId} ('{appName}')");
             Logger.Info($"Creating zip archives for {processedBranches.Count} branches of app {appId} ('{appName}')");
-
             string safeAppName = appName;
+            // Use appId (which is the effective/parent appId passed in) for pathing
             string appPath = Path.Combine(path, appId.ToString());
             string infoFilePath = Path.Combine(appPath, $"{appId}.info");
+            // Also check for potential DLC info file using the same appId path context
             string dlcInfoFilePath = Path.Combine(appPath, $"{appId}.dlcinfo");
-
             try
             {
+                // Prioritize info file if it exists at the effective appId path
                 if (File.Exists(infoFilePath))
                 {
                     string infoContent = await File.ReadAllTextAsync(infoFilePath);
                     string[] parts = infoContent.Split(';');
+                    // Expecting AppID;AppName format
                     if (parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[1]))
                     {
                         safeAppName = parts[1];
-                        Logger.Info($"Found app name from info file: {safeAppName}");
+                        Logger.Info($"Found app name from info file ({infoFilePath}): {safeAppName}");
                     }
                 }
+                // Check DLC info file if base info wasn't conclusive or didn't exist
                 else if (File.Exists(dlcInfoFilePath))
                 {
                     string infoContent = await File.ReadAllTextAsync(dlcInfoFilePath);
                     string[] parts = infoContent.Split(';');
+                    // Expecting AppID;AppName;DLC_For_ParentAppID format
                     if (parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[1]))
                     {
-                        safeAppName = parts[1];
-
+                        safeAppName = parts[1]; // Initial DLC name
                         if (parts.Length >= 3 && parts[2].StartsWith("DLC_For_"))
                         {
                             string parentIdStr = parts[2].Substring("DLC_For_".Length);
-
                             if (uint.TryParse(parentIdStr, out uint parentId))
                             {
+                                // Look for parent app's info file in its own directory
                                 string parentInfoPath = Path.Combine(path, parentId.ToString(), $"{parentId}.info");
                                 if (File.Exists(parentInfoPath))
                                 {
@@ -1428,109 +1403,116 @@ private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint pa
                                     string[] parentParts = parentInfo.Split(';');
                                     if (parentParts.Length >= 2 && !string.IsNullOrWhiteSpace(parentParts[1]))
                                     {
-                                        safeAppName = $"{parentParts[1]} - {safeAppName}";
-                                        Logger.Info($"Using parent name for DLC: {safeAppName}");
+                                        safeAppName = $"{parentParts[1]} - {safeAppName}"; // Prepend parent name
+                                        Logger.Info($"Using parent name for DLC from parent info file: {safeAppName}");
                                     }
                                 }
                             }
                         }
-
-                        Logger.Info($"Found app name from DLC info file: {safeAppName}");
+                        Logger.Info($"Found app name from DLC info file ({dlcInfoFilePath}): {safeAppName}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Logger.Warning($"Error reading info file for app {appId}: {ex.Message}. Using fallback name.");
+                Logger.Warning($"Error reading info/dlcinfo file for app {appId}: {ex.Message}. Using potentially fallback name '{safeAppName}'.");
             }
-
-            if (string.IsNullOrWhiteSpace(safeAppName) || safeAppName == "Unknown_App" || safeAppName == appName)
+            // Fallback to API if name is still default, empty, or potentially just the ID
+            if (string.IsNullOrWhiteSpace(safeAppName) || safeAppName == $"Unknown App {appId}" || safeAppName == $"App {appId}" || safeAppName == appName)
             {
                 try
                 {
                     Logger.Info($"Falling back to Steam Store API for app {appId} name");
+                    // Use appId (which is the effective/parent ID) for the API lookup
                     var appDetails = await SteamStoreAPI.GetAppDetailsAsync(appId);
-                    if (!string.IsNullOrWhiteSpace(appDetails.Name))
+                    if (appDetails != null && !string.IsNullOrWhiteSpace(appDetails.Name))
                     {
                         safeAppName = appDetails.Name;
-
-                        if (appDetails.IsDlc && appDetails.ParentAppId.HasValue)
+                        // If the API confirms it's DLC and provides a parent ID, try to get the parent's name
+                        if (appDetails.IsDlc && appDetails.ParentAppId.HasValue && appDetails.ParentAppId.Value != appId)
                         {
                             var parentDetails = await SteamStoreAPI.GetAppDetailsAsync(appDetails.ParentAppId.Value);
                             if (parentDetails != null && !string.IsNullOrEmpty(parentDetails.Name))
                             {
-                                safeAppName = $"{parentDetails.Name} - {safeAppName}";
+                                safeAppName = $"{parentDetails.Name} - {safeAppName}"; // Prepend parent name
                                 Logger.Info($"Using parent name for DLC from API: {safeAppName}");
                             }
                         }
-
                         Logger.Info($"Successfully got app name from Steam Store API: {safeAppName}");
+                    }
+                    else
+                    {
+                        Logger.Warning($"Steam Store API did not provide a name for app {appId}. Using '{safeAppName}'.");
                     }
                 }
                 catch (Exception apiEx)
                 {
-                    Logger.Warning($"Failed to get app name from API: {apiEx.Message}. Using original name.");
+                    Logger.Warning($"Failed to get app name from API: {apiEx.Message}. Using original name '{safeAppName}'.");
                 }
             }
-
             safeAppName = string.Join("_", safeAppName.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
             if (safeAppName.Length > 50) safeAppName = safeAppName.Substring(0, 50);
             safeAppName = safeAppName.Replace("__", "_").Trim('_');
-            if (string.IsNullOrEmpty(safeAppName)) safeAppName = "Unknown_App";
-
+            if (string.IsNullOrEmpty(safeAppName)) safeAppName = $"Unknown_App_{appId}"; // Ensure some valid name
             // Use a different variable name in the loop to avoid conflict
             foreach (var branchName in processedBranches)
             {
                 try
                 {
                     // Use a different name for the path variable inside the loop
+                    // Use appId (effective/parent ID) for pathing
                     string branchSourcePath = Path.Combine(appPath, branchName);
                     if (!Directory.Exists(branchSourcePath))
                     {
                         Logger.Warning($"Branch source directory not found for zipping: {branchSourcePath}");
                         continue;
                     }
-
-                    DateTime branchDate = DateTime.Now;
-                    if (branchLastModified.TryGetValue(branchName, out var date)) branchDate = date;
+                    DateTime branchDate = DateTime.Now; // Default fallback
+                    if (branchLastModified.TryGetValue(branchName, out var date))
+                    {
+                        branchDate = date;
+                        Logger.Debug($"Zip Creation (App {appId}, Branch '{branchName}'): Found date in branchLastModified: {branchDate}");
+                    }
+                    else
+                    {
+                        Logger.Warning($"Zip Creation (App {appId}, Branch '{branchName}'): Date NOT found in branchLastModified. Falling back to DateTime.Now ({branchDate}).");
+                    }
                     string dateTimeStr = branchDate.ToString("yyyy-MM-dd_HH-mm-ss");
-
+                    Logger.Debug($"Zip Creation (App {appId}, Branch '{branchName}'): Using dateTimeStr: {dateTimeStr}");
+                    // Use appId (effective/parent ID) in the folder name structure
                     string folderName = $"{appId}.{branchName}.{dateTimeStr}.{safeAppName}";
-                    string dateBranchFolder = Path.Combine(appPath, folderName);
-                    string zipFilePath = Path.Combine(dateBranchFolder, $"{appId}.zip");
-
+                    string dateBranchFolder = Path.Combine(appPath, folderName); // Base folder using appId
+                    string zipFilePath = Path.Combine(dateBranchFolder, $"{appId}.zip"); // Zip name also uses appId
+                    // Use appId (effective/parent ID) for cleanup path context
                     if (anyNewManifests) { CleanupOldZipsAndFolders(path, appId, branchName, folderName); }
                     if (!Directory.Exists(dateBranchFolder)) { Directory.CreateDirectory(dateBranchFolder); }
-
                     if (File.Exists(zipFilePath) && !anyNewManifests)
                     {
                         Logger.Info($"Zip archive already exists and no new manifests downloaded for branch '{branchName}', skipping: {zipFilePath}");
                         continue;
                     }
-
                     if (File.Exists(zipFilePath))
                     {
                         Logger.Info($"Updating zip archive for branch '{branchName}' due to new manifests.");
                         File.Delete(zipFilePath);
                     }
-
                     string tempDir = Path.Combine(path, $"temp_zip_{appId}_{Guid.NewGuid().ToString().Substring(0, 8)}");
                     if (Directory.Exists(tempDir))
                     {
                         try { Directory.Delete(tempDir, true); }
                         catch (Exception ex) { Logger.Warning($"Error cleaning up temp zip directory {tempDir}: {ex.Message}"); }
                     }
-
                     Directory.CreateDirectory(tempDir);
-
                     int manifestsIncluded = 0;
                     int luaFilesIncluded = 0;
                     int keyFilesIncluded = 0;
                     int infoFilesIncluded = 0;
-
+                    // Files to include are typically within the branchSourcePath
                     foreach (var file in Directory.EnumerateFiles(branchSourcePath))
                     {
                         string fileName = Path.GetFileName(file);
+                        // Check if the file matches patterns for manifests, lua, key, info
+                        // Note: Key/Info files might be one level up in appPath, adjust if needed
                         if (fileName.EndsWith(".manifest") || fileName.EndsWith(".lua") || fileName.EndsWith(".key") ||
                             fileName.EndsWith(".info") || fileName.EndsWith(".dlcinfo"))
                         {
@@ -1539,8 +1521,8 @@ private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint pa
                                 File.Copy(file, Path.Combine(tempDir, fileName), true);
                                 if (fileName.EndsWith(".manifest")) manifestsIncluded++;
                                 else if (fileName.EndsWith(".lua")) luaFilesIncluded++;
-                                else if (fileName.EndsWith(".key")) keyFilesIncluded++;
-                                else if (fileName.EndsWith(".info") || fileName.EndsWith(".dlcinfo")) infoFilesIncluded++;
+                                else if (fileName.EndsWith(".key")) keyFilesIncluded++; // Keys are usually per-depot, might not be here
+                                else if (fileName.EndsWith(".info") || fileName.EndsWith(".dlcinfo")) infoFilesIncluded++; // Info files might be one level up
                             }
                             catch (IOException ex)
                             {
@@ -1549,7 +1531,6 @@ private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint pa
                             }
                         }
                     }
-
                     if (Directory.EnumerateFileSystemEntries(tempDir).Any())
                     {
                         Logger.Info($"Creating zip for branch '{branchName}' with {manifestsIncluded} manifests, " +
@@ -1560,7 +1541,6 @@ private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint pa
                     {
                         Logger.Info($"No files found to include in zip for branch '{branchName}' of app {appId}");
                     }
-
                     if (Directory.Exists(tempDir))
                     {
                         try { Directory.Delete(tempDir, true); }

@@ -296,7 +296,7 @@ namespace DepotDumper
             sb.AppendLine("    <div class=\"container\">");
             sb.AppendLine("        <header>");
             sb.AppendLine("            <h1>DepotDumper Operation Report</h1>");
-            sb.AppendLine($"            <div class=\"timestamp\">Generated on {DateTime.Now:MMMM d, yyyy} at {DateTime.Now:h:mm:ss tt}</div>"); // Corrected ordinal format removed for simplicity
+            sb.AppendLine($"            <div class=\"timestamp\">Generated on {DateTime.Now:MMMM d, yyyy} at {DateTime.Now:h:mm:ss tt}</div>");
             sb.AppendLine("        </header>");
             sb.AppendLine("        <div class=\"card\">");
             sb.AppendLine("            <div class=\"card-header\">");
@@ -386,7 +386,7 @@ namespace DepotDumper
             sb.AppendLine("                        <tr>");
             sb.AppendLine("                            <th>App ID</th>");
             sb.AppendLine("                            <th>Name</th>");
-            sb.AppendLine("                            <th>Last Updated</th>"); // ADDED HEADER
+            sb.AppendLine("                            <th>Last Updated</th>");
             sb.AppendLine("                            <th>Depots</th>");
             sb.AppendLine("                            <th>Manifests</th>");
             sb.AppendLine("                            <th>Status</th>");
@@ -401,14 +401,14 @@ namespace DepotDumper
                 sb.AppendLine("                        <tr>");
                 sb.AppendLine($"                            <td>{app.AppId}</td>");
                 sb.AppendLine($"                            <td>{HtmlEncode(app.AppName)}</td>");
-                sb.AppendLine($"                            <td>{app.LastUpdated?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A"}</td>"); // ADDED DATA CELL
+                sb.AppendLine($"                            <td>{app.LastUpdated?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A"}</td>");
                 sb.AppendLine($"                            <td>{app.ProcessedDepots}/{app.TotalDepots}</td>");
                 sb.AppendLine($"                            <td>{app.NewManifests} new, {app.SkippedManifests} skipped</td>");
                 sb.AppendLine($"                            <td><span class=\"app-status {statusClass}\">{statusText}</span></td>");
                 sb.AppendLine($"                            <td><button id=\"toggle-{app.AppId}\" class=\"details-toggle\" onclick=\"toggleDetails({app.AppId})\">Show Details</button></td>");
                 sb.AppendLine("                        </tr>");
                 sb.AppendLine("                        <tr>");
-                sb.AppendLine($"                            <td colspan=\"7\"><div id=\"details-{app.AppId}\" class=\"details-content\">"); // Adjusted colspan
+                sb.AppendLine($"                            <td colspan=\"7\"><div id=\"details-{app.AppId}\" class=\"details-content\">");
                 if (app.DepotSummaries.Count > 0)
                 {
                     sb.AppendLine("                                <h3>Depot Details</h3>");
@@ -473,7 +473,7 @@ namespace DepotDumper
                 foreach (var group in errorGroups)
                 {
                     sb.AppendLine($"                        <li><strong>{group.Key}:</strong> {group.Count()} occurrences</li>");
-                    // Show a few examples per group
+
                     foreach (var error in group.Take(3))
                     {
                         sb.AppendLine($"                        <li style=\"margin-left: 20px; font-size: 12px;\">{HtmlEncode(error)}</li>");
@@ -499,13 +499,11 @@ namespace DepotDumper
             return sb.ToString();
         }
 
-        // Helper to encode text for HTML display
         private static string HtmlEncode(string text)
         {
             if (string.IsNullOrEmpty(text))
                 return string.Empty;
 
-            // Basic HTML encoding
             return text
                 .Replace("&", "&amp;")
                 .Replace("<", "&lt;")
@@ -514,7 +512,6 @@ namespace DepotDumper
                 .Replace("'", "&#39;");
         }
 
-        // Helper function to categorize errors based on keywords
         private static string GetErrorType(string errorMessage)
         {
             if (string.IsNullOrEmpty(errorMessage))
@@ -546,7 +543,6 @@ namespace DepotDumper
             return "Other Error";
         }
 
-        // Helper function to format TimeSpan nicely
         private static string FormatTimeSpan(TimeSpan span)
         {
             if (span.TotalDays >= 1)
@@ -555,7 +551,7 @@ namespace DepotDumper
                 return $"{span.Hours}h {span.Minutes}m {span.Seconds}s";
             if (span.TotalMinutes >= 1)
                 return $"{span.Minutes}m {span.Seconds}s";
-            return $"{span.Seconds}.{span.Milliseconds / 10}s"; // Show tenths of a second
+            return $"{span.Seconds}.{span.Milliseconds / 10}s";
         }
     }
 }
