@@ -6,13 +6,11 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net;
-using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using SteamKit2;
 using SteamKit2.CDN;
-using static SteamKit2.Internal.CContentBuilder_CommitAppBuild_Request;
 namespace DepotDumper
 {
     class DepotDumperException : Exception
@@ -1179,12 +1177,24 @@ namespace DepotDumper
                     await CreateZipsForApp(parentAppId, dumpPath, parentAppName);
                     CleanupEmptyDirectories(dumpPath);
                     StatisticsTracker.TrackAppCompletion(parentAppId, true);
+
+                    // Clear all state information after finishing an app
+                    branchLastModified.Clear();
+                    processedBranches.Clear();
+                    anyNewManifests = false;
+                    Logger.Info($"Completely reset all branch state after app {parentAppId} processing completed");
                 }
                 catch (Exception e)
                 {
                     Console.WriteLine("Error processing specific app {0}: {1}", specificAppId, e.Message);
                     Logger.Error($"Error processing specific app {specificAppId}: {e.ToString()}");
                     StatisticsTracker.TrackAppCompletion(parentAppId, false, new List<string> { e.Message });
+
+                    // Still clear state even on error
+                    branchLastModified.Clear();
+                    processedBranches.Clear();
+                    anyNewManifests = false;
+                    Logger.Info($"Reset branch state after error in app {parentAppId} processing");
                 }
                 return;
             }
@@ -1275,6 +1285,12 @@ namespace DepotDumper
                     await CreateZipsForApp(parentAppId, dumpPath, parentAppName);
                     Logger.Info($"--- Processing Parent Group End: {parentAppId} ---");
                     StatisticsTracker.TrackAppCompletion(parentAppId, groupOverallSuccess);
+
+                    // Clear all state information after finishing a parent group
+                    branchLastModified.Clear();
+                    processedBranches.Clear();
+                    anyNewManifests = false;
+                    Logger.Info($"Completely reset all branch state after parent group {parentAppId} processing completed");
                 }
                 catch (Exception e)
                 {
@@ -1285,6 +1301,12 @@ namespace DepotDumper
                         StatisticsTracker.TrackAppStart(parentAppId, parentAppName, groupLastUpdated);
                     }
                     StatisticsTracker.TrackAppCompletion(parentAppId, false, new List<string> { $"Group processing error: {e.Message}" });
+
+                    // Still clear state even on error
+                    branchLastModified.Clear();
+                    processedBranches.Clear();
+                    anyNewManifests = false;
+                    Logger.Info($"Reset branch state after error in parent group {parentAppId} processing");
                 }
             }
             CleanupEmptyDirectories(dumpPath);
@@ -1618,13 +1640,7 @@ namespace DepotDumper
                 {
                     Logger.Error($"Error creating zip for branch '{branchName}' of app {appId}: {ex.ToString()}");
                 }
-                branchLastModified.Clear();
-                processedBranches.Clear();
-                anyNewManifests = false;
-                Logger.Info($"Cleared branch state after zip creation for app {appId}");
             }
         }
-
     }
-
 }
