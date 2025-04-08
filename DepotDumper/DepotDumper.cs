@@ -1294,7 +1294,7 @@ namespace DepotDumper
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine("Error processing app group (Parent Context {1}): {2}", parentAppId, e.Message);
+                    Console.WriteLine("Error processing app group (Parent Context {0}): {1}", parentAppId, e.Message);
                     Logger.Error($"Error processing app group (Parent Context {parentAppId}): {e.ToString()}");
                     if (processedThisParentGroup && !StatisticsTracker.IsAppTracked(parentAppId))
                     {
