@@ -822,10 +822,7 @@ namespace DepotDumper
                 const int maxRetries = 5;
                 TimeSpan[] backoffDelays = {
             TimeSpan.FromSeconds(1),
-            TimeSpan.FromSeconds(3),
-            TimeSpan.FromSeconds(10),
-            TimeSpan.FromSeconds(20),
-            TimeSpan.FromSeconds(30)
+            TimeSpan.FromSeconds(3)
         };
                 while (retryCount < maxRetries)
                 {
@@ -1621,7 +1618,13 @@ namespace DepotDumper
                 {
                     Logger.Error($"Error creating zip for branch '{branchName}' of app {appId}: {ex.ToString()}");
                 }
+                branchLastModified.Clear();
+                processedBranches.Clear();
+                anyNewManifests = false;
+                Logger.Info($"Cleared branch state after zip creation for app {appId}");
             }
         }
+
     }
+
 }
