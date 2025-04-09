@@ -13,7 +13,7 @@ using SteamKit2.Internal;
 
 namespace DepotDumper
 {
-    class Steam3Session
+    public class Steam3Session
     {
         public readonly TaskCompletionSource<bool> _licenseListTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task LicenseListReady => _licenseListTcs.Task;
