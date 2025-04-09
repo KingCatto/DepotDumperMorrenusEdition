@@ -107,71 +107,99 @@ namespace DepotDumper
         {
             try
             {
-                using var httpClient = HttpClientFactory.CreateHttpClient();
-                var response = await httpClient.GetAsync($"https://api.steamcmd.net/v1/info/{appId}");
-                if (!response.IsSuccessStatusCode)
+                if (steam3 == null || !steam3.IsLoggedOn)
                 {
-                    Logger.Warning($"API request failed for ShouldProcessAppExtendedAsync app {appId} with status {response.StatusCode}");
-                    Logger.Debug($"App {appId}: SteamCMD API call failed with status {response.StatusCode}.");
-                    return (true, null); // Defaulting to shouldProcess=true, lastUpdated=null on API failure
+                    Logger.Warning($"Cannot determine if app {appId} should be processed: Steam session not available");
+                    return (true, null);
                 }
-                string jsonContent = await response.Content.ReadAsStringAsync();
-                using JsonDocument document = JsonDocument.Parse(jsonContent);
-                JsonElement root = document.RootElement;
-                if (!root.TryGetProperty("status", out var statusElement) || statusElement.GetString() != "success" ||
-                    !root.TryGetProperty("data", out var dataElement) || !dataElement.TryGetProperty(appId.ToString(), out var appElement))
+
+                await steam3.RequestAppInfo(appId);
+
+                // Get app type from common section
+                var commonSection = GetSteam3AppSection(appId, EAppInfoSection.Common);
+                if (commonSection != null && commonSection != KeyValue.Invalid)
                 {
-                    Logger.Warning($"Could not parse API response structure for ShouldProcessAppExtendedAsync app {appId}");
-                    Logger.Debug($"App {appId}: Failed to parse expected JSON structure from SteamCMD API.");
-                    return (true, null); // Defaulting on parse failure
-                }
-                bool shouldProcess = true;
-                if (appElement.TryGetProperty("common", out var commonElement))
-                {
-                    if (commonElement.TryGetProperty("type", out var typeElement))
+                    var typeNode = commonSection["type"];
+                    if (typeNode != KeyValue.Invalid && typeNode.Value != null)
                     {
-                        string appType = typeElement.GetString()?.ToLowerInvariant();
-                        Logger.Debug($"App {appId} type from API: {appType}");
-                        if (appType == "demo" || appType == "dlc" || appType == "music" || appType == "video" || appType == "hardware" || appType == "mod")
+                        string appType = typeNode.Value.ToLowerInvariant();
+                        Logger.Debug($"App {appId} type from SteamKit: {appType}");
+
+                        // Skip certain app types
+                        if (appType == "demo" || appType == "dlc" || appType == "music" ||
+                            appType == "video" || appType == "hardware" || appType == "mod")
                         {
-                            shouldProcess = false;
                             Logger.Info($"Skipping app {appId} because its type is '{appType}'.");
+                            return (false, null);
                         }
                     }
-                    if (shouldProcess && commonElement.TryGetProperty("freetodownload", out var freeToDownload) && freeToDownload.ValueKind == JsonValueKind.String && freeToDownload.GetString() == "1")
+
+                    // Check for free to download flag
+                    var freeToDownloadNode = commonSection["freetodownload"];
+                    if (freeToDownloadNode != KeyValue.Invalid && freeToDownloadNode.Value == "1")
                     {
-                        shouldProcess = false;
                         Logger.Info($"Skipping app {appId} because it appears to be free to download (freetodownload=1).");
+                        return (false, null);
                     }
                 }
+
+                // Get last updated time - check public branch first
                 DateTime? lastUpdated = null;
-                if (appElement.TryGetProperty("depots", out var depotsElement) &&
-                    depotsElement.TryGetProperty("branches", out var branchesElement) &&
-                    branchesElement.TryGetProperty("public", out var publicElement) &&
-                    publicElement.TryGetProperty("timeupdated", out var timeElement) &&
-                    timeElement.ValueKind == JsonValueKind.String &&
-                    long.TryParse(timeElement.GetString(), out long unixTime))
+                var depotsSection = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+                if (depotsSection != null && depotsSection != KeyValue.Invalid)
                 {
-                    lastUpdated = DateTimeOffset.FromUnixTimeSeconds(unixTime).DateTime;
-                    Logger.Debug($"App {appId} public branch last updated from API: {lastUpdated}");
+                    var branchesNode = depotsSection["branches"];
+                    if (branchesNode != KeyValue.Invalid)
+                    {
+                        var publicNode = branchesNode["public"];
+                        if (publicNode != KeyValue.Invalid)
+                        {
+                            var timeUpdatedNode = publicNode["timeupdated"];
+                            if (timeUpdatedNode != KeyValue.Invalid && timeUpdatedNode.Value != null &&
+                                long.TryParse(timeUpdatedNode.Value, out long unixTime))
+                            {
+                                lastUpdated = DateTimeOffset.FromUnixTimeSeconds(unixTime).DateTime;
+                                Logger.Debug($"Found last updated time for app {appId}: {lastUpdated}");
+                            }
+                        }
+                    }
+
+                    // If we couldn't find it in branches, try looking at last depot update
+                    if (lastUpdated == null)
+                    {
+                        var latestTime = new DateTime(2000, 1, 1); // Start with old date
+
+                        foreach (var depotNode in depotsSection.Children)
+                        {
+                            if (depotNode.Name == "branches" || !uint.TryParse(depotNode.Name, out _))
+                                continue;
+
+                            var lastUpdateNode = depotNode["lastupdate"];
+                            if (lastUpdateNode != KeyValue.Invalid && lastUpdateNode.Value != null &&
+                                long.TryParse(lastUpdateNode.Value, out long depotUpdateTime))
+                            {
+                                var depotDate = DateTimeOffset.FromUnixTimeSeconds(depotUpdateTime).DateTime;
+                                if (depotDate > latestTime)
+                                {
+                                    latestTime = depotDate;
+                                }
+                            }
+                        }
+
+                        if (latestTime.Year > 2000)
+                        {
+                            lastUpdated = latestTime;
+                            Logger.Debug($"Determined last updated time for app {appId} from depot updates: {lastUpdated}");
+                        }
+                    }
                 }
-                else
-                {
-                    Logger.Debug($"App {appId} public branch 'timeupdated' not found or invalid in API response.");
-                }
-                Logger.Debug($"App {appId}: ShouldProcessAppExtendedAsync returning: shouldProcess={shouldProcess}, lastUpdated={lastUpdated}");
-                return (shouldProcess, lastUpdated);
-            }
-            catch (JsonException jsonEx)
-            {
-                Logger.Error($"Error parsing JSON in ShouldProcessAppExtendedAsync for {appId}: {jsonEx.Message}");
-                Logger.Debug($"App {appId}: JSON parsing exception in ShouldProcessAppExtendedAsync.");
-                return (true, null);
+
+                Logger.Debug($"App {appId}: ShouldProcessApp returning: shouldProcess=true, lastUpdated={lastUpdated}");
+                return (true, lastUpdated);
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error in ShouldProcessAppExtendedAsync for {appId}: {ex.Message}");
-                Logger.Debug($"App {appId}: Generic exception in ShouldProcessAppExtendedAsync: {ex.GetType().Name}");
                 return (true, null);
             }
         }
@@ -382,149 +410,357 @@ namespace DepotDumper
             catch (Exception ex) { Logger.Error($"Error cleaning subdirectories of {directory}: {ex.ToString()}"); }
         }
         static bool IsDirectoryEmpty(string path) { try { return !Directory.EnumerateFileSystemEntries(path).Any(); } catch { return false; } }
-        private static async Task<Dictionary<uint, string>> GetAppDlcInfoAsync(uint appId)
+        private static async Task<Dictionary<uint, string>> GetDlcInfoViaSteamKitOnlyAsync(uint appId)
         {
             var dlcAppIds = new Dictionary<uint, string>();
-            Logger.Debug($"Starting GetAppDlcInfoAsync for appId: {appId} (Using SteamCMD API ONLY)");
-            List<uint> discoveredDlcList = new List<uint>();
+            Logger.Debug($"Starting SteamKit-only DLC detection for appId: {appId}");
+
             try
             {
-                using var httpClient = HttpClientFactory.CreateHttpClient();
-                string baseCmdApiUrl = $"https://api.steamcmd.net/v1/info/{appId}";
-                Logger.Debug($"Calling SteamCMD API for base game info: {baseCmdApiUrl}");
-                var baseResponse = await httpClient.GetAsync(baseCmdApiUrl);
-                Logger.Debug($"Base game SteamCMD API response status: {baseResponse.StatusCode}");
-                if (!baseResponse.IsSuccessStatusCode)
+                // Make sure we have the Steam3 session
+                if (steam3 == null || !steam3.IsLoggedOn)
                 {
-                    Logger.Warning($"Base game SteamCMD API request failed for app {appId} with status {baseResponse.StatusCode}");
+                    Logger.Warning("Cannot get DLC info: Steam3 session is not valid or not logged on");
                     return dlcAppIds;
                 }
-                string baseJsonContent = await baseResponse.Content.ReadAsStringAsync();
-                Logger.Debug($"Base game SteamCMD API response content length: {baseJsonContent.Length}");
-                using JsonDocument baseDocument = JsonDocument.Parse(baseJsonContent);
-                if (!baseDocument.RootElement.TryGetProperty("status", out var baseStatusElement) || baseStatusElement.GetString() != "success")
+
+                // Request app info for the base app
+                await steam3.RequestAppInfo(appId);
+
+                // Get the extended section which contains the DLC list
+                var extendedSection = GetSteam3AppSection(appId, EAppInfoSection.Extended);
+                if (extendedSection == null || extendedSection == KeyValue.Invalid)
                 {
-                    Logger.Warning($"Base game ({appId}) SteamCMD response status was not 'success'.");
+                    Logger.Warning($"App {appId} does not have an extended section in app info");
                     return dlcAppIds;
                 }
-                if (!baseDocument.RootElement.TryGetProperty("data", out var baseDataElement))
+
+                // Look for the 'listofdlc' key that contains comma-separated DLC IDs
+                var listOfDlcNode = extendedSection["listofdlc"];
+                if (listOfDlcNode == KeyValue.Invalid || string.IsNullOrEmpty(listOfDlcNode.Value))
                 {
-                    Logger.Warning($"Base game ({appId}) SteamCMD JSON response missing 'data' property.");
+                    Logger.Debug($"App {appId} does not have a listofdlc in extended section");
                     return dlcAppIds;
                 }
-                if (!baseDataElement.TryGetProperty(appId.ToString(), out var baseAppElement))
+
+                // Parse the DLC IDs
+                var dlcIds = listOfDlcNode.Value
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => s.Trim())
+                    .Where(s => uint.TryParse(s, out _))
+                    .Select(s => uint.Parse(s))
+                    .ToList();
+
+                Logger.Info($"Found {dlcIds.Count} DLCs listed for app {appId}");
+
+                // Now check each DLC to determine if it has depots
+                foreach (var dlcId in dlcIds)
                 {
-                    Logger.Warning($"Base game ({appId}) SteamCMD JSON response missing 'data.{appId}' property.");
-                    return dlcAppIds;
-                }
-                if (!baseAppElement.TryGetProperty("extended", out var extendedElement))
-                {
-                    Logger.Warning($"Base game ({appId}) SteamCMD JSON response missing 'extended' property.");
-                    return dlcAppIds;
-                }
-                if (!extendedElement.TryGetProperty("listofdlc", out var listOfDlcElement))
-                {
-                    Logger.Debug($"Base game ({appId}) SteamCMD JSON response missing 'listofdlc' property in 'extended'. Game might not have DLC listed via this API.");
-                }
-                else if (listOfDlcElement.ValueKind != JsonValueKind.String)
-                {
-                    Logger.Warning($"Base game ({appId}) 'listofdlc' property is not a string: {listOfDlcElement.ValueKind}");
-                }
-                else
-                {
-                    string dlcString = listOfDlcElement.GetString();
-                    Logger.Debug($"Found 'listofdlc' string: \"{dlcString}\"");
-                    if (!string.IsNullOrEmpty(dlcString))
+                    await steam3.RequestAppInfo(dlcId);
+                    bool isDlc = false;
+                    bool hasDepots = false;
+                    string dlcName = $"DLC {dlcId}";
+
+                    // Check if it's a DLC by looking at the type in common section
+                    var commonSection = GetSteam3AppSection(dlcId, EAppInfoSection.Common);
+                    if (commonSection != null && commonSection != KeyValue.Invalid)
                     {
-                        string[] dlcIdStrings = dlcString.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                        foreach (string idStr in dlcIdStrings)
+                        var typeNode = commonSection["type"];
+                        if (typeNode != KeyValue.Invalid && typeNode.Value != null)
                         {
-                            if (uint.TryParse(idStr, out uint discoveredId))
+                            isDlc = typeNode.Value.Equals("dlc", StringComparison.OrdinalIgnoreCase);
+                        }
+
+                        var nameNode = commonSection["name"];
+                        if (nameNode != KeyValue.Invalid && nameNode.Value != null)
+                        {
+                            dlcName = nameNode.Value;
+                        }
+                    }
+
+                    // Skip if not a DLC
+                    if (!isDlc)
+                    {
+                        Logger.Debug($"App {dlcId} is not a DLC (type not 'dlc'), skipping");
+                        continue;
+                    }
+
+                    // Check for depots in various ways
+
+                    // Method 1: Check if the DLC has its own depots section
+                    var depotsSection = GetSteam3AppSection(dlcId, EAppInfoSection.Depots);
+                    if (depotsSection != null && depotsSection != KeyValue.Invalid)
+                    {
+                        // Look for actual depots (ignoring the "branches" node which isn't a depot)
+                        foreach (var child in depotsSection.Children)
+                        {
+                            if (child.Name != "branches" && uint.TryParse(child.Name, out _))
                             {
-                                discoveredDlcList.Add(discoveredId);
-                                Logger.Debug($"  Parsed DLC ID {discoveredId} from listofdlc.");
-                            }
-                            else
-                            {
-                                Logger.Warning($"  Could not parse DLC ID '{idStr}' from listofdlc string.");
+                                hasDepots = true;
+                                Logger.Debug($"DLC {dlcId} has its own depot: {child.Name}");
+                                break;
                             }
                         }
+                    }
+
+                    // Method 2: Check for DLC depots in the base app's depots section
+                    if (!hasDepots)
+                    {
+                        var baseDepotsSection = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+                        if (baseDepotsSection != null && baseDepotsSection != KeyValue.Invalid)
+                        {
+                            foreach (var child in baseDepotsSection.Children)
+                            {
+                                if (child.Name == "branches" || !uint.TryParse(child.Name, out _))
+                                    continue;
+
+                                var dlcAppIdNode = child["dlcappid"];
+                                if (dlcAppIdNode != KeyValue.Invalid &&
+                                    uint.TryParse(dlcAppIdNode.Value, out uint depotDlcId) &&
+                                    depotDlcId == dlcId)
+                                {
+                                    hasDepots = true;
+                                    Logger.Debug($"Found depot for DLC {dlcId} in parent app's depots (dlcappid reference)");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Method 3: Check for hasdepotsindlc in config section 
+                    if (!hasDepots)
+                    {
+                        var configSection = GetSteam3AppSection(dlcId, EAppInfoSection.Config);
+                        if (configSection != null && configSection != KeyValue.Invalid)
+                        {
+                            var hasDepotsNode = configSection["hasdepotsindlc"];
+                            if (hasDepotsNode != KeyValue.Invalid && hasDepotsNode.Value != null)
+                            {
+                                if (hasDepotsNode.Value == "1" ||
+                                    hasDepotsNode.Value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                                    hasDepotsNode.Value.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    hasDepots = true;
+                                    Logger.Debug($"DLC {dlcId} has hasdepotsindlc flag set in config");
+                                }
+                            }
+                        }
+                    }
+
+                    // Add to result if it's a DLC without depots
+                    if (!hasDepots)
+                    {
+                        Logger.Info($"Adding DLC {dlcId} ('{dlcName}') to list - it has NO depots");
+                        dlcAppIds[dlcId] = dlcName;
                     }
                     else
                     {
-                        Logger.Debug("The 'listofdlc' string is empty. No DLCs listed.");
+                        Logger.Debug($"Skipping DLC {dlcId} ('{dlcName}') - it HAS depots");
                     }
-                }
-                Logger.Info($"Found {discoveredDlcList.Count} potential DLCs for app {appId} via SteamCMD API's listofdlc.");
-                foreach (var dlcId in discoveredDlcList)
-                {
-                    Logger.Debug($"Processing discovered DLC ID: {dlcId}");
-                    try
-                    {
-                        string dlcCmdApiUrl = $"https://api.steamcmd.net/v1/info/{dlcId}";
-                        Logger.Debug($"  Calling SteamCMD API for DLC details: {dlcCmdApiUrl}");
-                        var dlcResponse = await httpClient.GetAsync(dlcCmdApiUrl);
-                        Logger.Debug($"  DLC details SteamCMD API response status: {dlcResponse.StatusCode}");
-                        if (!dlcResponse.IsSuccessStatusCode)
-                        {
-                            Logger.Warning($"  SteamCMD API request failed for DLC details {dlcId} with status {dlcResponse.StatusCode}");
-                            continue;
-                        }
-                        string dlcJsonContent = await dlcResponse.Content.ReadAsStringAsync();
-                        Logger.Debug($"  DLC details SteamCMD API response content length: {dlcJsonContent.Length}");
-                        using JsonDocument dlcDocument = JsonDocument.Parse(dlcJsonContent);
-                        if (!dlcDocument.RootElement.TryGetProperty("status", out var dlcStatusElement) || dlcStatusElement.GetString() != "success" ||
-                            !dlcDocument.RootElement.TryGetProperty("data", out var dlcDataElement) || !dlcDataElement.TryGetProperty(dlcId.ToString(), out var dlcAppElement))
-                        {
-                            Logger.Warning($"  Failed to get valid DLC data structure for {dlcId} from SteamCMD API");
-                            continue;
-                        }
-                        Logger.Debug($"  Successfully parsed SteamCMD API response for DLC {dlcId} details");
-                        bool hasDepots = false;
-                        if (dlcAppElement.TryGetProperty("depots", out var dlcDepotsElement))
-                        {
-                            if (dlcDepotsElement.TryGetProperty("hasdepotsindlc", out var hasDepotsInDlcElement))
-                            {
-                                hasDepots = hasDepotsInDlcElement.ValueKind == JsonValueKind.String && hasDepotsInDlcElement.GetString() != "0";
-                                Logger.Debug($"  DLC {dlcId} 'hasdepotsindlc' property value: {hasDepotsInDlcElement.ToString()}. hasDepots = {hasDepots}");
-                            }
-                            else if (dlcDepotsElement.TryGetProperty("depots", out var depotsListElement) && depotsListElement.ValueKind == JsonValueKind.Object && depotsListElement.EnumerateObject().Any())
-                            {
-                                hasDepots = true;
-                                Logger.Debug($"  DLC {dlcId} 'hasdepotsindlc' not found, but found depots list. Assuming hasDepots = true");
-                            }
-                            else
-                            {
-                                Logger.Debug($"  DLC {dlcId} 'hasdepotsindlc' not found and no depots list found. Assuming hasDepots = false");
-                            }
-                        }
-                        else
-                        {
-                            Logger.Debug($"  DLC {dlcId} response has no 'depots' section. Assuming hasDepots = false");
-                        }
-                        string dlcName = "Unknown DLC";
-                        if (dlcAppElement.TryGetProperty("common", out var dlcCommonElement) && dlcCommonElement.TryGetProperty("name", out var dlcNameElement))
-                        {
-                            dlcName = dlcNameElement.GetString();
-                        }
-                        Logger.Debug($"  DLC {dlcId} Name: '{dlcName}'");
-                        if (!hasDepots)
-                        {
-                            Logger.Debug($"  Adding DLC {dlcId} ('{dlcName}') to list because it has NO depots.");
-                            dlcAppIds.Add(dlcId, dlcName);
-                        }
-                        else
-                        {
-                            Logger.Debug($"  Skipping DLC {dlcId} ('{dlcName}') because it HAS depots.");
-                        }
-                    }
-                    catch (JsonException jsonEx) { Logger.Error($"  Error parsing JSON for DLC {dlcId} details: {jsonEx.Message}"); }
-                    catch (Exception ex) { Logger.Error($"  Unexpected error checking DLC {dlcId} details: {ex.Message}"); }
                 }
             }
-            catch (JsonException jsonEx) { Logger.Error($"Error parsing base game ({appId}) JSON from SteamCMD API: {jsonEx.Message}"); }
-            catch (Exception ex) { Logger.Error($"Unexpected error in GetAppDlcInfoAsync (SteamCMD Only) for app {appId}: {ex.ToString()}"); }
-            Logger.Debug($"Finished GetAppDlcInfoAsync (SteamCMD Only) for appId: {appId}. Returning {dlcAppIds.Count} DLCs (without depots).");
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in GetDlcInfoViaSteamKitOnlyAsync for app {appId}: {ex.ToString()}");
+            }
+
+            Logger.Info($"SteamKit-only DLC detection found {dlcAppIds.Count} DLCs without depots for app {appId}");
+            return dlcAppIds;
+        }
+        private static async Task<Dictionary<uint, string>> GetAppDlcInfoAsync(uint appId)
+        {
+            var dlcAppIds = new Dictionary<uint, string>();
+            Logger.Debug($"Starting GetAppDlcInfoAsync for appId: {appId} (Using SteamKit only)");
+
+            try
+            {
+                // Make sure we have the Steam3 session
+                if (steam3 == null || !steam3.IsLoggedOn)
+                {
+                    Logger.Warning("Cannot get DLC info: Steam3 session is not valid or not logged on");
+                    return dlcAppIds;
+                }
+
+                // Request app info for the base app
+                await steam3.RequestAppInfo(appId);
+
+                // Get the extended section which contains the DLC list
+                var extendedSection = GetSteam3AppSection(appId, EAppInfoSection.Extended);
+                if (extendedSection == null || extendedSection == KeyValue.Invalid)
+                {
+                    Logger.Warning($"App {appId} does not have an extended section in app info");
+                    return dlcAppIds;
+                }
+
+                // Look for the 'listofdlc' key that contains comma-separated DLC IDs
+                var listOfDlcNode = extendedSection["listofdlc"];
+                if (listOfDlcNode == KeyValue.Invalid || string.IsNullOrEmpty(listOfDlcNode.Value))
+                {
+                    Logger.Debug($"App {appId} does not have a listofdlc in extended section");
+                    return dlcAppIds;
+                }
+
+                // Parse the DLC IDs
+                var dlcIds = listOfDlcNode.Value
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => s.Trim())
+                    .Where(s => uint.TryParse(s, out _))
+                    .Select(s => uint.Parse(s))
+                    .ToList();
+
+                Logger.Info($"Found {dlcIds.Count} DLCs listed for app {appId}");
+
+                // Now check each DLC to determine if it has depots
+                foreach (var dlcId in dlcIds)
+                {
+                    await steam3.RequestAppInfo(dlcId);
+                    bool isDlc = false;
+                    bool hasDepots = false;
+                    string dlcName = $"DLC {dlcId}";
+
+                    // Check if it's a DLC by looking at the type in common section
+                    var commonSection = GetSteam3AppSection(dlcId, EAppInfoSection.Common);
+                    if (commonSection != null && commonSection != KeyValue.Invalid)
+                    {
+                        var typeNode = commonSection["type"];
+                        if (typeNode != KeyValue.Invalid && typeNode.Value != null)
+                        {
+                            isDlc = typeNode.Value.Equals("dlc", StringComparison.OrdinalIgnoreCase);
+                        }
+
+                        var nameNode = commonSection["name"];
+                        if (nameNode != KeyValue.Invalid && nameNode.Value != null)
+                        {
+                            dlcName = nameNode.Value;
+                        }
+                    }
+
+                    // Skip if not a DLC
+                    if (!isDlc)
+                    {
+                        Logger.Debug($"App {dlcId} is not a DLC (type not 'dlc'), skipping");
+                        continue;
+                    }
+
+                    // Check for depots in various ways
+
+                    // Method 1: Check if the DLC has its own depots section
+                    var depotsSection = GetSteam3AppSection(dlcId, EAppInfoSection.Depots);
+                    if (depotsSection != null && depotsSection != KeyValue.Invalid)
+                    {
+                        // Look for actual depots (ignoring the "branches" node which isn't a depot)
+                        foreach (var child in depotsSection.Children)
+                        {
+                            if (child.Name != "branches" && uint.TryParse(child.Name, out _))
+                            {
+                                hasDepots = true;
+                                Logger.Debug($"DLC {dlcId} has its own depot: {child.Name}");
+                                break;
+                            }
+                        }
+                    }
+
+                    // Method 2: Check for DLC depots in the base app's depots section
+                    if (!hasDepots)
+                    {
+                        var baseDepotsSection = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+                        if (baseDepotsSection != null && baseDepotsSection != KeyValue.Invalid)
+                        {
+                            foreach (var child in baseDepotsSection.Children)
+                            {
+                                if (child.Name == "branches" || !uint.TryParse(child.Name, out _))
+                                    continue;
+
+                                var dlcAppIdNode = child["dlcappid"];
+                                if (dlcAppIdNode != KeyValue.Invalid &&
+                                    uint.TryParse(dlcAppIdNode.Value, out uint depotDlcId) &&
+                                    depotDlcId == dlcId)
+                                {
+                                    hasDepots = true;
+                                    Logger.Debug($"Found depot for DLC {dlcId} in parent app's depots (dlcappid reference)");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Method 3: Check for hasdepotsindlc in config section 
+                    if (!hasDepots)
+                    {
+                        var configSection = GetSteam3AppSection(dlcId, EAppInfoSection.Config);
+                        if (configSection != null && configSection != KeyValue.Invalid)
+                        {
+                            var hasDepotsNode = configSection["hasdepotsindlc"];
+                            if (hasDepotsNode != KeyValue.Invalid && hasDepotsNode.Value != null)
+                            {
+                                if (hasDepotsNode.Value == "1" ||
+                                    hasDepotsNode.Value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                                    hasDepotsNode.Value.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    hasDepots = true;
+                                    Logger.Debug($"DLC {dlcId} has hasdepotsindlc flag set in config");
+                                }
+                            }
+                        }
+                    }
+
+                    // Method 4: In some cases, a DLC's config section may have a 'depotsetup' key
+                    if (!hasDepots)
+                    {
+                        var configSection = GetSteam3AppSection(dlcId, EAppInfoSection.Config);
+                        if (configSection != null && configSection != KeyValue.Invalid)
+                        {
+                            var depotSetupNode = configSection["depotsetup"];
+                            if (depotSetupNode != KeyValue.Invalid && depotSetupNode.Children.Count > 0)
+                            {
+                                hasDepots = true;
+                                Logger.Debug($"DLC {dlcId} has depotsetup in config section");
+                            }
+                        }
+                    }
+
+                    // Method 5: Check if this DLC is mentioned in any of the parent app's depot dlcappid fields
+                    if (!hasDepots)
+                    {
+                        var baseDepotsSection = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+                        if (baseDepotsSection != null && baseDepotsSection != KeyValue.Invalid)
+                        {
+                            foreach (var depotNode in baseDepotsSection.Children)
+                            {
+                                if (depotNode.Name == "branches" || !uint.TryParse(depotNode.Name, out _))
+                                    continue;
+
+                                var dlcAppIdNode = depotNode["dlcappid"];
+                                if (dlcAppIdNode != KeyValue.Invalid &&
+                                    uint.TryParse(dlcAppIdNode.Value, out uint linkedDlcId) &&
+                                    linkedDlcId == dlcId)
+                                {
+                                    hasDepots = true;
+                                    Logger.Debug($"DLC {dlcId} is referenced by a depot in the parent app");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Add to result if it's a DLC without depots
+                    if (!hasDepots)
+                    {
+                        Logger.Info($"Adding DLC {dlcId} ('{dlcName}') to list - it has NO depots");
+                        dlcAppIds[dlcId] = dlcName;
+                    }
+                    else
+                    {
+                        Logger.Debug($"Skipping DLC {dlcId} ('{dlcName}') - it HAS depots");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in GetAppDlcInfoAsync for app {appId}: {ex.ToString()}");
+            }
+
+            Logger.Debug($"Finished GetAppDlcInfoAsync for appId: {appId}. Found {dlcAppIds.Count} DLCs (without depots).");
             return dlcAppIds;
         }
         private static async Task UpdateLuaFileWithDlcAsync(string filePath, uint appId, uint depotId, string depotKeyHex, ulong manifestId, Dictionary<uint, string> dlcAppIds)
@@ -775,7 +1011,7 @@ namespace DepotDumper
                 branchLastModified.AddOrUpdate(cleanBranchName, definitiveDate, (key, existingDate) =>
                 {
                     // Always prefer the older date
-                    var dateToUse = definitiveDate < existingDate ? definitiveDate : existingDate;
+                    var dateToUse = existingDate;
                     Logger.Debug($"Manifest {manifestId}: Updating branch '{key}'. ExistingDate={existingDate}, NewDate={definitiveDate}. Using {dateToUse}");
                     return dateToUse;
                 });
@@ -1485,37 +1721,54 @@ namespace DepotDumper
                 Logger.Warning($"Error reading info/dlcinfo file for app {appId}: {ex.Message}. Using potentially fallback name '{safeAppName}'.");
             }
 
-            // Fallback to API if name is still default, empty, or potentially just the ID
+            // Fallback to SteamKit if name is still default, empty, or potentially just the ID
             if (string.IsNullOrWhiteSpace(safeAppName) || safeAppName == $"Unknown App {appId}" || safeAppName == $"App {appId}" || safeAppName == appName)
             {
                 try
                 {
-                    Logger.Info($"Falling back to Steam Store API for app {appId} name");
-                    // Use appId (which is the effective/parent ID) for the API lookup
-                    var appDetails = await SteamStoreAPI.GetAppDetailsAsync(appId);
-                    if (appDetails != null && !string.IsNullOrWhiteSpace(appDetails.Name))
+                    // Use SteamKit directly instead of API
+                    if (steam3 != null && steam3.IsLoggedOn)
                     {
-                        safeAppName = appDetails.Name;
-                        // If the API confirms it's DLC and provides a parent ID, try to get the parent's name
-                        if (appDetails.IsDlc && appDetails.ParentAppId.HasValue && appDetails.ParentAppId.Value != appId)
+                        await steam3.RequestAppInfo(appId);
+                        var commonSection = GetSteam3AppSection(appId, EAppInfoSection.Common);
+                        if (commonSection != null && commonSection != KeyValue.Invalid)
                         {
-                            var parentDetails = await SteamStoreAPI.GetAppDetailsAsync(appDetails.ParentAppId.Value);
-                            if (parentDetails != null && !string.IsNullOrEmpty(parentDetails.Name))
+                            var nameNode = commonSection["name"];
+                            if (nameNode != KeyValue.Invalid && nameNode.Value != null)
                             {
-                                safeAppName = $"{parentDetails.Name} - {safeAppName}"; // Prepend parent name
-                                Logger.Info($"Using parent name for DLC from API: {safeAppName}");
+                                safeAppName = nameNode.Value;
+                                Logger.Info($"Using app name from SteamKit: {safeAppName}");
+
+                                // If it's a DLC, try to include the parent name too
+                                var typeNode = commonSection["type"];
+                                if (typeNode != KeyValue.Invalid && typeNode.Value != null &&
+                                    typeNode.Value.Equals("dlc", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var dlcForAppIdNode = commonSection["DLCForAppID"];
+                                    if (dlcForAppIdNode != KeyValue.Invalid && dlcForAppIdNode.Value != null &&
+                                        uint.TryParse(dlcForAppIdNode.Value, out uint parentId))
+                                    {
+                                        // Try to get parent name
+                                        await steam3.RequestAppInfo(parentId);
+                                        var parentCommonSection = GetSteam3AppSection(parentId, EAppInfoSection.Common);
+                                        if (parentCommonSection != null && parentCommonSection != KeyValue.Invalid)
+                                        {
+                                            var parentNameNode = parentCommonSection["name"];
+                                            if (parentNameNode != KeyValue.Invalid && parentNameNode.Value != null)
+                                            {
+                                                safeAppName = $"{parentNameNode.Value} - {safeAppName}";
+                                                Logger.Info($"Using parent name for DLC from SteamKit: {safeAppName}");
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
-                        Logger.Info($"Successfully got app name from Steam Store API: {safeAppName}");
-                    }
-                    else
-                    {
-                        Logger.Warning($"Steam Store API did not provide a name for app {appId}. Using '{safeAppName}'.");
                     }
                 }
-                catch (Exception apiEx)
+                catch (Exception ex)
                 {
-                    Logger.Warning($"Failed to get app name from API: {apiEx.Message}. Using original name '{safeAppName}'.");
+                    Logger.Warning($"Failed to get app name from SteamKit for app {appId}: {ex.Message}. Using original name '{safeAppName}'.");
                 }
             }
 

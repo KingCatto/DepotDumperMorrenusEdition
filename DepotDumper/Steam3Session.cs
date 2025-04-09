@@ -15,7 +15,7 @@ namespace DepotDumper
 {
     class Steam3Session
     {
-        private readonly TaskCompletionSource<bool> _licenseListTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource<bool> _licenseListTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task LicenseListReady => _licenseListTcs.Task;
         public string LoggedInUsername => IsLoggedOn ? logonDetails?.Username : null;
 
@@ -89,7 +89,7 @@ namespace DepotDumper
 
         public delegate bool WaitCondition();
 
-        private readonly Lock steamLock = new();
+        public readonly Lock steamLock = new();
 
         public bool WaitUntilCallback(Action submitter, WaitCondition waiter)
         {
@@ -131,7 +131,7 @@ namespace DepotDumper
             {
                 while (!token.IsCancellationRequested)
                 {
-                     await callbacks.RunWaitCallbackAsync(token);
+                    await callbacks.RunWaitCallbackAsync(token);
                 }
             }
             catch (OperationCanceledException)
@@ -144,8 +144,8 @@ namespace DepotDumper
             if ((AppInfo.ContainsKey(appId) && !bForce) || bAborted)
                 return;
 
-            var jobResult = await steamApps.PICSGetAccessTokens( new List<uint> { appId }, Enumerable.Empty<uint>() );
-            var appTokens = jobResult; 
+            var jobResult = await steamApps.PICSGetAccessTokens(new List<uint> { appId }, Enumerable.Empty<uint>());
+            var appTokens = jobResult;
 
             if (appTokens.AppTokensDenied.Contains(appId))
             {
@@ -168,40 +168,40 @@ namespace DepotDumper
             }
             else
             {
-                 Logger.Debug($"No access token found for AppID {appId} request.");
+                Logger.Debug($"No access token found for AppID {appId} request.");
             }
 
 
             var picsInfo = await steamApps.PICSGetProductInfo(new List<SteamApps.PICSRequest> { request }, Enumerable.Empty<SteamApps.PICSRequest>());
             var appInfoMultiple = picsInfo;
 
-             if (appInfoMultiple?.Results == null)
-             {
-                 Logger.Error($"PICSGetProductInfo returned null result for AppID {appId}");
-                 AppInfo[appId] = null;
-                 return;
-             }
-
-
-            foreach (var appInfoResult in appInfoMultiple.Results) 
+            if (appInfoMultiple?.Results == null)
             {
-                 if(appInfoResult.Apps == null) continue; 
+                Logger.Error($"PICSGetProductInfo returned null result for AppID {appId}");
+                AppInfo[appId] = null;
+                return;
+            }
+
+
+            foreach (var appInfoResult in appInfoMultiple.Results)
+            {
+                if (appInfoResult.Apps == null) continue;
 
                 foreach (var app_value in appInfoResult.Apps)
                 {
                     var app = app_value.Value;
-                     if (app == null) continue; 
+                    if (app == null) continue;
 
                     Console.WriteLine("Got AppInfo for {0}", app.ID);
-                     Logger.Info($"Received AppInfo for {app.ID}");
+                    Logger.Info($"Received AppInfo for {app.ID}");
                     AppInfo[app.ID] = app;
                 }
 
-                 if(appInfoResult.UnknownApps == null) continue; 
+                if (appInfoResult.UnknownApps == null) continue;
 
                 foreach (var app in appInfoResult.UnknownApps)
                 {
-                     Logger.Warning($"AppInfo request resulted in UnknownApp for AppID {app}");
+                    Logger.Warning($"AppInfo request resulted in UnknownApp for AppID {app}");
                     AppInfo[app] = null;
                 }
             }
@@ -210,17 +210,17 @@ namespace DepotDumper
 
         public async Task RequestPackageInfo(IEnumerable<uint> packageIds)
         {
-             var packagesToRequest = packageIds.Except(PackageInfo.Keys).Where(id => id != 0).Distinct().ToList(); 
+            var packagesToRequest = packageIds.Except(PackageInfo.Keys).Where(id => id != 0).Distinct().ToList();
 
-             if (packagesToRequest.Count == 0 || bAborted)
-                 return;
+            if (packagesToRequest.Count == 0 || bAborted)
+                return;
 
-             Logger.Debug($"Requesting PackageInfo for {packagesToRequest.Count} packages: {string.Join(", ", packagesToRequest)}");
+            Logger.Debug($"Requesting PackageInfo for {packagesToRequest.Count} packages: {string.Join(", ", packagesToRequest)}");
 
 
             var packageRequests = new List<SteamApps.PICSRequest>();
 
-            foreach (var package in packagesToRequest) 
+            foreach (var package in packagesToRequest)
             {
                 var request = new SteamApps.PICSRequest(package);
 
@@ -232,37 +232,37 @@ namespace DepotDumper
                 packageRequests.Add(request);
             }
 
-             var picsInfo = await steamApps.PICSGetProductInfo(Enumerable.Empty<SteamApps.PICSRequest>(), packageRequests);
-             var packageInfoMultiple = picsInfo; 
+            var picsInfo = await steamApps.PICSGetProductInfo(Enumerable.Empty<SteamApps.PICSRequest>(), packageRequests);
+            var packageInfoMultiple = picsInfo;
 
-             if (packageInfoMultiple?.Results == null)
-             {
-                 Logger.Error($"PICSGetProductInfo returned null result for package request.");
-                 foreach(var pkgId in packagesToRequest)
-                 {
-                     PackageInfo[pkgId] = null;
-                 }
-                 return;
-             }
-
-            foreach (var packageInfoResult in packageInfoMultiple.Results) 
+            if (packageInfoMultiple?.Results == null)
             {
-                 if (packageInfoResult.Packages == null) continue; 
+                Logger.Error($"PICSGetProductInfo returned null result for package request.");
+                foreach (var pkgId in packagesToRequest)
+                {
+                    PackageInfo[pkgId] = null;
+                }
+                return;
+            }
+
+            foreach (var packageInfoResult in packageInfoMultiple.Results)
+            {
+                if (packageInfoResult.Packages == null) continue;
 
                 foreach (var package_value in packageInfoResult.Packages)
                 {
-                     var package = package_value.Value;
-                     if (package == null) continue; 
+                    var package = package_value.Value;
+                    if (package == null) continue;
 
-                     Logger.Debug($"Received PackageInfo for {package.ID}");
+                    Logger.Debug($"Received PackageInfo for {package.ID}");
                     PackageInfo[package.ID] = package;
                 }
 
-                 if (packageInfoResult.UnknownPackages == null) continue; 
+                if (packageInfoResult.UnknownPackages == null) continue;
 
                 foreach (var package in packageInfoResult.UnknownPackages)
                 {
-                     Logger.Warning($"PackageInfo request resulted in UnknownPackage for PackageID {package}");
+                    Logger.Warning($"PackageInfo request resulted in UnknownPackage for PackageID {package}");
                     PackageInfo[package] = null;
                 }
             }
@@ -271,26 +271,26 @@ namespace DepotDumper
 
         public async Task<bool> RequestFreeAppLicense(uint appId)
         {
-             if (bAborted) return false;
+            if (bAborted) return false;
 
             try
             {
-                var resultInfo = await steamApps.RequestFreeLicense( new List<uint> { appId } );
+                var resultInfo = await steamApps.RequestFreeLicense(new List<uint> { appId });
 
-                 if (resultInfo == null)
-                 {
-                     Logger.Warning($"RequestFreeLicense for app {appId} returned null.");
-                     return false;
-                 }
+                if (resultInfo == null)
+                {
+                    Logger.Warning($"RequestFreeLicense for app {appId} returned null.");
+                    return false;
+                }
 
                 bool granted = resultInfo.GrantedApps.Contains(appId);
-                 Logger.Info($"RequestFreeLicense for app {appId}: Result={resultInfo.Result}, Granted={granted}");
+                Logger.Info($"RequestFreeLicense for app {appId}: Result={resultInfo.Result}, Granted={granted}");
                 return granted;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to request FreeOnDemand license for app {appId}: {ex.Message}");
-                 Logger.Error($"Exception during RequestFreeLicense for app {appId}: {ex}");
+                Logger.Error($"Exception during RequestFreeLicense for app {appId}: {ex}");
                 return false;
             }
         }
@@ -301,31 +301,31 @@ namespace DepotDumper
             if (DepotKeys.ContainsKey(depotId) || bAborted)
                 return;
 
-             var depotKeyResult = await steamApps.GetDepotDecryptionKey(depotId, appid); 
+            var depotKeyResult = await steamApps.GetDepotDecryptionKey(depotId, appid);
 
-             if (depotKeyResult == null)
-             {
-                 Logger.Error($"GetDepotDecryptionKey for depot {depotId} (app context {appid}) returned null.");
-                 return;
-             }
+            if (depotKeyResult == null)
+            {
+                Logger.Error($"GetDepotDecryptionKey for depot {depotId} (app context {appid}) returned null.");
+                return;
+            }
 
 
             Console.WriteLine("Got depot key for {0} result: {1}", depotKeyResult.DepotID, depotKeyResult.Result);
-             Logger.Info($"Depot key result for {depotKeyResult.DepotID} (app context {appid}): {depotKeyResult.Result}");
+            Logger.Info($"Depot key result for {depotKeyResult.DepotID} (app context {appid}): {depotKeyResult.Result}");
 
             if (depotKeyResult.Result != EResult.OK)
             {
                 return;
             }
 
-             if (depotKeyResult.DepotKey == null || depotKeyResult.DepotKey.Length == 0)
-             {
-                 Logger.Warning($"GetDepotDecryptionKey for depot {depotId} returned OK but key was null or empty.");
-                 return;
-             }
+            if (depotKeyResult.DepotKey == null || depotKeyResult.DepotKey.Length == 0)
+            {
+                Logger.Warning($"GetDepotDecryptionKey for depot {depotId} returned OK but key was null or empty.");
+                return;
+            }
 
             DepotKeys[depotKeyResult.DepotID] = depotKeyResult.DepotKey;
-             Logger.Debug($"Stored depot key for {depotKeyResult.DepotID}");
+            Logger.Debug($"Stored depot key for {depotKeyResult.DepotID}");
         }
 
         public async Task<ulong> GetDepotManifestRequestCodeAsync(uint depotId, uint appId, ulong manifestId, string branch)
@@ -352,129 +352,129 @@ namespace DepotDumper
 
         public async Task RequestCDNAuthToken(uint appid, uint depotid, Server server)
         {
-             if (server?.Host == null)
-             {
-                 Logger.Warning("RequestCDNAuthToken called with null server or server host.");
-                 return;
-             }
+            if (server?.Host == null)
+            {
+                Logger.Warning("RequestCDNAuthToken called with null server or server host.");
+                return;
+            }
 
             var cdnKey = (depotid, server.Host);
             var completion = new TaskCompletionSource<SteamContent.CDNAuthToken>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             if (bAborted || !CDNAuthTokens.TryAdd(cdnKey, completion))
             {
-                 if (CDNAuthTokens.TryGetValue(cdnKey, out var existingTcs))
-                 {
-                     Logger.Debug($"CDN auth token request already in progress for {server.Host}, awaiting existing task.");
-                     await existingTcs.Task;
-                 }
-                 else if (!bAborted)
-                 {
-                     Logger.Warning($"Failed to add CDN auth token TCS for {server.Host}, but no existing task found.");
-                 }
+                if (CDNAuthTokens.TryGetValue(cdnKey, out var existingTcs))
+                {
+                    Logger.Debug($"CDN auth token request already in progress for {server.Host}, awaiting existing task.");
+                    await existingTcs.Task;
+                }
+                else if (!bAborted)
+                {
+                    Logger.Warning($"Failed to add CDN auth token TCS for {server.Host}, but no existing task found.");
+                }
                 return;
             }
 
             DebugLog.WriteLine(nameof(Steam3Session), $"Requesting CDN auth token for {server.Host}");
-             Logger.Debug($"Requesting CDN auth token for {server.Host} (App: {appid}, Depot: {depotid})");
+            Logger.Debug($"Requesting CDN auth token for {server.Host} (App: {appid}, Depot: {depotid})");
 
-             try
-             {
-                 var cdnAuth = await steamContent.GetCDNAuthToken(appid, depotid, server.Host);
+            try
+            {
+                var cdnAuth = await steamContent.GetCDNAuthToken(appid, depotid, server.Host);
 
-                 if (cdnAuth == null)
-                 {
-                     Logger.Error($"GetCDNAuthToken for {server.Host} returned null.");
-                     completion.TrySetException(new Exception($"GetCDNAuthToken returned null for host {server.Host}"));
-                     CDNAuthTokens.TryRemove(cdnKey, out _);
-                     return;
-                 }
+                if (cdnAuth == null)
+                {
+                    Logger.Error($"GetCDNAuthToken for {server.Host} returned null.");
+                    completion.TrySetException(new Exception($"GetCDNAuthToken returned null for host {server.Host}"));
+                    CDNAuthTokens.TryRemove(cdnKey, out _);
+                    return;
+                }
 
-                 Console.WriteLine($"Got CDN auth token for {server.Host} result: {cdnAuth.Result} (expires {cdnAuth.Expiration})");
-                 Logger.Info($"CDN auth token for {server.Host}: Result={cdnAuth.Result}, Expires={cdnAuth.Expiration}");
+                Console.WriteLine($"Got CDN auth token for {server.Host} result: {cdnAuth.Result} (expires {cdnAuth.Expiration})");
+                Logger.Info($"CDN auth token for {server.Host}: Result={cdnAuth.Result}, Expires={cdnAuth.Expiration}");
 
-                 if (cdnAuth.Result != EResult.OK)
-                 {
-                     completion.TrySetException(new Exception($"Failed to get CDN auth token for {server.Host}. Result: {cdnAuth.Result}"));
-                 }
-                 else
-                 {
-                     completion.TrySetResult(cdnAuth);
-                 }
-             }
-             catch (Exception ex)
-             {
-                 Logger.Error($"Exception during GetCDNAuthToken for {server.Host}: {ex}");
-                 completion.TrySetException(ex);
-             }
-             finally
-             {
-                 if (!completion.Task.IsCompleted)
-                 {
-                     completion.TrySetCanceled();
-                 }
-                 if (completion.Task.IsFaulted || completion.Task.IsCanceled)
-                 {
-                     CDNAuthTokens.TryRemove(cdnKey, out _);
-                 }
-             }
+                if (cdnAuth.Result != EResult.OK)
+                {
+                    completion.TrySetException(new Exception($"Failed to get CDN auth token for {server.Host}. Result: {cdnAuth.Result}"));
+                }
+                else
+                {
+                    completion.TrySetResult(cdnAuth);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Exception during GetCDNAuthToken for {server.Host}: {ex}");
+                completion.TrySetException(ex);
+            }
+            finally
+            {
+                if (!completion.Task.IsCompleted)
+                {
+                    completion.TrySetCanceled();
+                }
+                if (completion.Task.IsFaulted || completion.Task.IsCanceled)
+                {
+                    CDNAuthTokens.TryRemove(cdnKey, out _);
+                }
+            }
         }
 
         public async Task CheckAppBetaPassword(uint appid, string password)
         {
-             if (bAborted) return;
+            if (bAborted) return;
 
-             var appPasswordResult = await steamApps.CheckAppBetaPassword(appid, password);
+            var appPasswordResult = await steamApps.CheckAppBetaPassword(appid, password);
 
-             if (appPasswordResult == null)
-             {
-                 Logger.Error($"CheckAppBetaPassword for app {appid} returned null.");
-                 return;
-             }
+            if (appPasswordResult == null)
+            {
+                Logger.Error($"CheckAppBetaPassword for app {appid} returned null.");
+                return;
+            }
 
 
             Console.WriteLine("Retrieved {0} beta keys with result: {1}", appPasswordResult.BetaPasswords.Count, appPasswordResult.Result);
-             Logger.Info($"CheckAppBetaPassword result for app {appid}: {appPasswordResult.Result}, Keys retrieved: {appPasswordResult.BetaPasswords.Count}");
+            Logger.Info($"CheckAppBetaPassword result for app {appid}: {appPasswordResult.Result}, Keys retrieved: {appPasswordResult.BetaPasswords.Count}");
 
-             if (appPasswordResult.Result == EResult.OK && appPasswordResult.BetaPasswords != null)
-             {
-                 foreach (var entry in appPasswordResult.BetaPasswords)
-                 {
-                     AppBetaPasswords[entry.Key] = entry.Value;
-                     Logger.Debug($"Stored beta password key '{entry.Key}' for app {appid}");
-                 }
-             }
-             else if (appPasswordResult.Result != EResult.OK)
-             {
-                 Logger.Warning($"Failed to check beta password for app {appid}. Result: {appPasswordResult.Result}");
-             }
+            if (appPasswordResult.Result == EResult.OK && appPasswordResult.BetaPasswords != null)
+            {
+                foreach (var entry in appPasswordResult.BetaPasswords)
+                {
+                    AppBetaPasswords[entry.Key] = entry.Value;
+                    Logger.Debug($"Stored beta password key '{entry.Key}' for app {appid}");
+                }
+            }
+            else if (appPasswordResult.Result != EResult.OK)
+            {
+                Logger.Warning($"Failed to check beta password for app {appid}. Result: {appPasswordResult.Result}");
+            }
         }
 
         public async Task<PublishedFileDetails> GetPublishedFileDetails(uint appId, PublishedFileID pubFile)
         {
-             if (bAborted) return null;
+            if (bAborted) return null;
 
             var pubFileRequest = new CPublishedFile_GetDetails_Request { appid = appId };
             pubFileRequest.publishedfileids.Add(pubFile);
 
-             var detailsResponse = await steamPublishedFile.GetDetails(pubFileRequest);
+            var detailsResponse = await steamPublishedFile.GetDetails(pubFileRequest);
 
-             if (detailsResponse == null || detailsResponse.Body == null)
-             {
-                 Logger.Error($"GetPublishedFileDetails response or body was null for pubfile {pubFile} (App: {appId}).");
-                 throw new Exception($"GetDetails returned null response/body for pubfile {pubFile}.");
-             }
+            if (detailsResponse == null || detailsResponse.Body == null)
+            {
+                Logger.Error($"GetPublishedFileDetails response or body was null for pubfile {pubFile} (App: {appId}).");
+                throw new Exception($"GetDetails returned null response/body for pubfile {pubFile}.");
+            }
 
-             var detailsBody = detailsResponse.Body;
+            var detailsBody = detailsResponse.Body;
 
-             Logger.Info($"GetPublishedFileDetails result for pubfile {pubFile} (App: {appId}): {detailsResponse.Result}");
+            Logger.Info($"GetPublishedFileDetails result for pubfile {pubFile} (App: {appId}): {detailsResponse.Result}");
 
             if (detailsResponse.Result == EResult.OK)
             {
                 return detailsBody.publishedfiledetails?.FirstOrDefault();
             }
 
-             Logger.Warning($"GetPublishedFileDetails failed for pubfile {pubFile}. EResult: {detailsResponse.Result}");
+            Logger.Warning($"GetPublishedFileDetails failed for pubfile {pubFile}. EResult: {detailsResponse.Result}");
             throw new Exception($"EResult {(int)detailsResponse.Result} ({detailsResponse.Result}) while retrieving file details for pubfile {pubFile}.");
         }
 
@@ -482,17 +482,17 @@ namespace DepotDumper
 
         public async Task<SteamCloud.UGCDetailsCallback> GetUGCDetails(UGCHandle ugcHandle)
         {
-             if (bAborted) return null;
+            if (bAborted) return null;
 
-             var callback = await steamCloud.RequestUGCDetails(ugcHandle);
+            var callback = await steamCloud.RequestUGCDetails(ugcHandle);
 
-             if (callback == null)
-             {
-                 Logger.Error($"RequestUGCDetails returned null callback for UGC handle {ugcHandle}.");
-                 throw new Exception($"RequestUGCDetails returned null for {ugcHandle}.");
-             }
+            if (callback == null)
+            {
+                Logger.Error($"RequestUGCDetails returned null callback for UGC handle {ugcHandle}.");
+                throw new Exception($"RequestUGCDetails returned null for {ugcHandle}.");
+            }
 
-             Logger.Info($"GetUGCDetails result for handle {ugcHandle}: {callback.Result}");
+            Logger.Info($"GetUGCDetails result for handle {ugcHandle}: {callback.Result}");
 
             if (callback.Result == EResult.OK)
             {
@@ -500,16 +500,16 @@ namespace DepotDumper
             }
             else if (callback.Result == EResult.FileNotFound)
             {
-                 Logger.Warning($"UGC details not found for handle {ugcHandle}.");
+                Logger.Warning($"UGC details not found for handle {ugcHandle}.");
                 return null;
             }
 
-             Logger.Error($"GetUGCDetails failed for handle {ugcHandle}. EResult: {callback.Result}");
+            Logger.Error($"GetUGCDetails failed for handle {ugcHandle}. EResult: {callback.Result}");
             throw new Exception($"EResult {(int)callback.Result} ({callback.Result}) while retrieving UGC details for {ugcHandle}.");
         }
 
 
-        private void ResetConnectionFlags()
+        public void ResetConnectionFlags()
         {
             bExpectingDisconnectRemote = false;
             bDidDisconnect = false;
@@ -525,75 +525,75 @@ namespace DepotDumper
 
             ResetConnectionFlags();
             this.steamClient.Connect();
-             Logger.Info("Initiating connection to Steam...");
+            Logger.Info("Initiating connection to Steam...");
         }
 
-        private void Abort(bool sendLogOff = true)
+        public void Abort(bool sendLogOff = true)
         {
-             if (bAborted) return;
-             Logger.Warning($"Aborting Steam session. SendLogOff={sendLogOff}");
+            if (bAborted) return;
+            Logger.Warning($"Aborting Steam session. SendLogOff={sendLogOff}");
             Disconnect(sendLogOff);
         }
 
         public void Disconnect(bool sendLogOff = true)
         {
-             if (bAborted && !bConnecting)
-             {
-                 Logger.Debug("Disconnect called, but already aborted/disconnected.");
-                 return;
-             }
-
-            if (sendLogOff && IsLoggedOn) 
+            if (bAborted && !bConnecting)
             {
-                 Logger.Info("Logging off Steam user.");
+                Logger.Debug("Disconnect called, but already aborted/disconnected.");
+                return;
+            }
+
+            if (sendLogOff && IsLoggedOn)
+            {
+                Logger.Info("Logging off Steam user.");
                 steamUser.LogOff();
             }
 
-            bAborted = true; 
-            bConnecting = false; 
-            bIsConnectionRecovery = false; 
+            bAborted = true;
+            bConnecting = false;
+            bIsConnectionRecovery = false;
 
             if (!abortedToken.IsCancellationRequested)
             {
                 abortedToken.Cancel();
-                 Logger.Debug("Cancellation token signaled.");
+                Logger.Debug("Cancellation token signaled.");
             }
 
             steamClient.Disconnect();
-             Logger.Info("SteamClient disconnected.");
+            Logger.Info("SteamClient disconnected.");
 
             Ansi.Progress(Ansi.ProgressState.Hidden);
 
             var disconnectTimeout = TimeSpan.FromSeconds(5);
-             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             while (!bDidDisconnect && stopwatch.Elapsed < disconnectTimeout)
             {
                 callbacks.RunWaitCallbacks(TimeSpan.FromMilliseconds(50));
             }
-             stopwatch.Stop();
+            stopwatch.Stop();
 
-             if (!bDidDisconnect)
-             {
-                 Logger.Warning("Did not receive DisconnectedCallback within timeout during Disconnect.");
-             }
-             else
-             {
-                 Logger.Debug("DisconnectedCallback received during Disconnect process.");
-             }
+            if (!bDidDisconnect)
+            {
+                Logger.Warning("Did not receive DisconnectedCallback within timeout during Disconnect.");
+            }
+            else
+            {
+                Logger.Debug("DisconnectedCallback received during Disconnect process.");
+            }
         }
 
-        private void Reconnect()
+        public void Reconnect()
         {
-             if (bAborted) return;
-             Logger.Info("Attempting to reconnect to Steam...");
+            if (bAborted) return;
+            Logger.Info("Attempting to reconnect to Steam...");
             bIsConnectionRecovery = true;
             steamClient.Disconnect();
         }
 
-        private async void ConnectedCallback(SteamClient.ConnectedCallback connected)
+        public async void ConnectedCallback(SteamClient.ConnectedCallback connected)
         {
             Console.WriteLine(" Done!");
-             Logger.Info("Successfully connected to Steam.");
+            Logger.Info("Successfully connected to Steam.");
             bConnecting = false;
 
             connectionBackoff = 0;
@@ -601,160 +601,160 @@ namespace DepotDumper
             if (!authenticatedUser)
             {
                 Console.Write("Logging anonymously into Steam3...");
-                 Logger.Info("Attempting anonymous login...");
+                Logger.Info("Attempting anonymous login...");
                 steamUser.LogOnAnonymous();
             }
             else
             {
-                 if (logonDetails.Username != null)
-                 {
-                     Console.WriteLine("Logging '{0}' into Steam3...", logonDetails.Username);
-                 }
+                if (logonDetails.Username != null)
+                {
+                    Console.WriteLine("Logging '{0}' into Steam3...", logonDetails.Username);
+                }
 
-                 if (authSession is null)
-                 {
-                     if (logonDetails.Username != null && logonDetails.Password != null && logonDetails.AccessToken is null)
-                     {
-                         try
-                         {
-                             _ = AccountSettingsStore.Instance.GuardData.TryGetValue(logonDetails.Username, out var guarddata);
-                             authSession = await steamClient.Authentication.BeginAuthSessionViaCredentialsAsync(new SteamKit2.Authentication.AuthSessionDetails
-                             {
-                                 Username = logonDetails.Username,
-                                 Password = logonDetails.Password,
-                                 IsPersistentSession = DepotDumper.Config.RememberPassword,
-                                 GuardData = guarddata,
-                                 Authenticator = new UserConsoleAuthenticator(),
-                             });
-                         }
-                         catch (TaskCanceledException) { return; }
-                         catch (Exception ex)
-                         {
-                             Console.Error.WriteLine("Failed to authenticate with Steam: " + ex.Message);
-                             Abort(false);
-                             return;
-                         }
-                     }
-                     else if (logonDetails.AccessToken is null && DepotDumper.Config.UseQrCode)
-                     {
-                         Console.WriteLine("Logging in with QR code...");
-                         try
-                         {
-                             var session = await steamClient.Authentication.BeginAuthSessionViaQRAsync(new AuthSessionDetails
-                             {
-                                 IsPersistentSession = DepotDumper.Config.RememberPassword,
-                                 Authenticator = new UserConsoleAuthenticator(),
-                             });
-                             authSession = session;
-                             session.ChallengeURLChanged = () =>
-                             {
-                                 Console.WriteLine("\nThe QR code has changed:");
-                                 DisplayQrCode(session.ChallengeURL);
-                             };
-                             DisplayQrCode(session.ChallengeURL);
-                         }
-                         catch (TaskCanceledException) { return; }
-                         catch (Exception ex)
-                         {
-                             Console.Error.WriteLine("Failed to authenticate with Steam: " + ex.Message);
-                             Abort(false);
-                             return;
-                         }
-                     }
-                 }
+                if (authSession is null)
+                {
+                    if (logonDetails.Username != null && logonDetails.Password != null && logonDetails.AccessToken is null)
+                    {
+                        try
+                        {
+                            _ = AccountSettingsStore.Instance.GuardData.TryGetValue(logonDetails.Username, out var guarddata);
+                            authSession = await steamClient.Authentication.BeginAuthSessionViaCredentialsAsync(new SteamKit2.Authentication.AuthSessionDetails
+                            {
+                                Username = logonDetails.Username,
+                                Password = logonDetails.Password,
+                                IsPersistentSession = DepotDumper.Config.RememberPassword,
+                                GuardData = guarddata,
+                                Authenticator = new UserConsoleAuthenticator(),
+                            });
+                        }
+                        catch (TaskCanceledException) { return; }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine("Failed to authenticate with Steam: " + ex.Message);
+                            Abort(false);
+                            return;
+                        }
+                    }
+                    else if (logonDetails.AccessToken is null && DepotDumper.Config.UseQrCode)
+                    {
+                        Console.WriteLine("Logging in with QR code...");
+                        try
+                        {
+                            var session = await steamClient.Authentication.BeginAuthSessionViaQRAsync(new AuthSessionDetails
+                            {
+                                IsPersistentSession = DepotDumper.Config.RememberPassword,
+                                Authenticator = new UserConsoleAuthenticator(),
+                            });
+                            authSession = session;
+                            session.ChallengeURLChanged = () =>
+                            {
+                                Console.WriteLine("\nThe QR code has changed:");
+                                DisplayQrCode(session.ChallengeURL);
+                            };
+                            DisplayQrCode(session.ChallengeURL);
+                        }
+                        catch (TaskCanceledException) { return; }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine("Failed to authenticate with Steam: " + ex.Message);
+                            Abort(false);
+                            return;
+                        }
+                    }
+                }
 
-                 if (authSession != null)
-                 {
-                     try
-                     {
-                         var result = await authSession.PollingWaitForResultAsync();
-                         logonDetails.Username = result.AccountName;
-                         logonDetails.Password = null;
-                         logonDetails.AccessToken = result.RefreshToken;
+                if (authSession != null)
+                {
+                    try
+                    {
+                        var result = await authSession.PollingWaitForResultAsync();
+                        logonDetails.Username = result.AccountName;
+                        logonDetails.Password = null;
+                        logonDetails.AccessToken = result.RefreshToken;
 
-                         if (result.NewGuardData != null) { AccountSettingsStore.Instance.GuardData[result.AccountName] = result.NewGuardData; }
-                         else { AccountSettingsStore.Instance.GuardData.Remove(result.AccountName); }
-                         AccountSettingsStore.Instance.LoginTokens[result.AccountName] = result.RefreshToken;
-                         AccountSettingsStore.Save();
-                     }
-                     catch (TaskCanceledException) { return; }
-                     catch (Exception ex)
-                     {
-                         Console.Error.WriteLine("Failed to authenticate with Steam: " + ex.Message);
-                         Abort(false);
-                         return;
-                     }
-                     authSession = null;
-                 }
+                        if (result.NewGuardData != null) { AccountSettingsStore.Instance.GuardData[result.AccountName] = result.NewGuardData; }
+                        else { AccountSettingsStore.Instance.GuardData.Remove(result.AccountName); }
+                        AccountSettingsStore.Instance.LoginTokens[result.AccountName] = result.RefreshToken;
+                        AccountSettingsStore.Save();
+                    }
+                    catch (TaskCanceledException) { return; }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine("Failed to authenticate with Steam: " + ex.Message);
+                        Abort(false);
+                        return;
+                    }
+                    authSession = null;
+                }
 
-                 if (logonDetails.Username != null || logonDetails.AccessToken != null)
-                 {
-                     steamUser.LogOn(logonDetails);
-                     Logger.Info($"Attempting login for user: {logonDetails.Username ?? "using token"}...");
-                 }
-                 else
-                 {
-                     Logger.Error("Authenticated user flow reached without username or token in logonDetails.");
-                     Abort(false);
-                 }
+                if (logonDetails.Username != null || logonDetails.AccessToken != null)
+                {
+                    steamUser.LogOn(logonDetails);
+                    Logger.Info($"Attempting login for user: {logonDetails.Username ?? "using token"}...");
+                }
+                else
+                {
+                    Logger.Error("Authenticated user flow reached without username or token in logonDetails.");
+                    Abort(false);
+                }
             }
         }
 
 
-        private void DisconnectedCallback(SteamClient.DisconnectedCallback disconnected)
+        public void DisconnectedCallback(SteamClient.DisconnectedCallback disconnected)
         {
             bDidDisconnect = true;
 
             DebugLog.WriteLine(nameof(Steam3Session), $"Disconnected: bIsConnectionRecovery = {bIsConnectionRecovery}, UserInitiated = {disconnected.UserInitiated}, bExpectingDisconnectRemote = {bExpectingDisconnectRemote}");
-             Logger.Info($"Steam disconnected. UserInitiated={disconnected.UserInitiated}, IsConnectionRecovery={bIsConnectionRecovery}, ExpectingRemoteDisconnect={bExpectingDisconnectRemote}");
+            Logger.Info($"Steam disconnected. UserInitiated={disconnected.UserInitiated}, IsConnectionRecovery={bIsConnectionRecovery}, ExpectingRemoteDisconnect={bExpectingDisconnectRemote}");
 
-             if (!_licenseListTcs.Task.IsCompleted)
-             {
-                 _licenseListTcs.TrySetException(new Exception("Disconnected from Steam before license list could be retrieved."));
-                 Logger.Warning("Signaled license TCS with exception due to disconnect.");
-             }
+            if (!_licenseListTcs.Task.IsCompleted)
+            {
+                _licenseListTcs.TrySetException(new Exception("Disconnected from Steam before license list could be retrieved."));
+                Logger.Warning("Signaled license TCS with exception due to disconnect.");
+            }
 
             if (!bAborted && (bIsConnectionRecovery || (!disconnected.UserInitiated && !bExpectingDisconnectRemote)))
             {
-                 connectionBackoff += 1;
-                 if (connectionBackoff >= 10)
-                 {
-                     Console.WriteLine("Could not connect to Steam after 10 tries");
-                     Logger.Error("Could not connect to Steam after 10 tries.");
-                     Abort(false);
-                 }
-                 else
-                 {
-                     int delaySeconds = Math.Min(60, (int)Math.Pow(2, connectionBackoff));
-                     Console.WriteLine($"Lost connection to Steam. Reconnecting in {delaySeconds} seconds (Attempt #{connectionBackoff})...");
-                     Logger.Warning($"Lost connection to Steam. Reconnecting in {delaySeconds}s (Attempt #{connectionBackoff}).");
+                connectionBackoff += 1;
+                if (connectionBackoff >= 10)
+                {
+                    Console.WriteLine("Could not connect to Steam after 10 tries");
+                    Logger.Error("Could not connect to Steam after 10 tries.");
+                    Abort(false);
+                }
+                else
+                {
+                    int delaySeconds = Math.Min(60, (int)Math.Pow(2, connectionBackoff));
+                    Console.WriteLine($"Lost connection to Steam. Reconnecting in {delaySeconds} seconds (Attempt #{connectionBackoff})...");
+                    Logger.Warning($"Lost connection to Steam. Reconnecting in {delaySeconds}s (Attempt #{connectionBackoff}).");
 
-                     Thread.Sleep(TimeSpan.FromSeconds(delaySeconds));
+                    Thread.Sleep(TimeSpan.FromSeconds(delaySeconds));
 
-                     ResetConnectionFlags();
-                     bConnecting = true;
-                     steamClient.Connect();
-                 }
+                    ResetConnectionFlags();
+                    bConnecting = true;
+                    steamClient.Connect();
+                }
             }
-             else if (!bIsConnectionRecovery && (disconnected.UserInitiated || bExpectingDisconnectRemote))
+            else if (!bIsConnectionRecovery && (disconnected.UserInitiated || bExpectingDisconnectRemote))
             {
                 Console.WriteLine("Disconnected from Steam");
-                 Logger.Info("Disconnected from Steam as expected or user-initiated.");
+                Logger.Info("Disconnected from Steam as expected or user-initiated.");
 
-                 if (!bAborted)
-                 {
+                if (!bAborted)
+                {
                     Abort(false);
-                 }
+                }
             }
-             else if (bAborted)
-             {
-                 Logger.Debug("Disconnected callback handled, session was already aborted.");
-             }
+            else if (bAborted)
+            {
+                Logger.Debug("Disconnected callback handled, session was already aborted.");
+            }
         }
 
-        private void LogOnCallback(SteamUser.LoggedOnCallback loggedOn)
+        public void LogOnCallback(SteamUser.LoggedOnCallback loggedOn)
         {
-             Logger.Info($"LogOnCallback received. Result: {loggedOn.Result}");
+            Logger.Info($"LogOnCallback received. Result: {loggedOn.Result}");
 
             var isSteamGuard = loggedOn.Result == EResult.AccountLogonDenied;
             var is2FA = loggedOn.Result == EResult.AccountLoginDeniedNeedTwoFactor;
@@ -767,7 +767,7 @@ namespace DepotDumper
 
             if (isSteamGuard || is2FA || isAccessToken)
             {
-                 Logger.Warning($"Logon failed, requires user intervention. Result: {loggedOn.Result}");
+                Logger.Warning($"Logon failed, requires user intervention. Result: {loggedOn.Result}");
                 bExpectingDisconnectRemote = true;
                 Abort(false);
 
@@ -775,7 +775,8 @@ namespace DepotDumper
 
                 if (is2FA)
                 {
-                    do {
+                    do
+                    {
                         Console.Write("Please enter your 2 factor auth code from your authenticator app: ");
                         logonDetails.TwoFactorCode = Console.ReadLine();
                     } while (string.Empty == logonDetails.TwoFactorCode);
@@ -791,7 +792,8 @@ namespace DepotDumper
                 }
                 else
                 {
-                    do {
+                    do
+                    {
                         Console.Write("Please enter the authentication code sent to your email address: ");
                         logonDetails.AuthCode = Console.ReadLine();
                     } while (string.Empty == logonDetails.AuthCode);
@@ -804,7 +806,7 @@ namespace DepotDumper
 
             if (loggedOn.Result == EResult.TryAnotherCM)
             {
-                 Logger.Info("Logon result is TryAnotherCM. Attempting reconnection...");
+                Logger.Info("Logon result is TryAnotherCM. Attempting reconnection...");
                 Console.Write("Retrying Steam3 connection (TryAnotherCM)...");
                 Reconnect();
                 return;
@@ -813,7 +815,7 @@ namespace DepotDumper
             if (loggedOn.Result == EResult.ServiceUnavailable)
             {
                 Console.WriteLine("Unable to login to Steam3: {0}", loggedOn.Result);
-                 Logger.Error($"Logon failed due to ServiceUnavailable ({loggedOn.Result}). Aborting.");
+                Logger.Error($"Logon failed due to ServiceUnavailable ({loggedOn.Result}). Aborting.");
                 Abort(false);
                 return;
             }
@@ -821,13 +823,13 @@ namespace DepotDumper
             if (loggedOn.Result != EResult.OK)
             {
                 Console.WriteLine("Unable to login to Steam3: {0}", loggedOn.Result);
-                 Logger.Error($"Logon failed with unexpected result: {loggedOn.Result}. Aborting.");
+                Logger.Error($"Logon failed with unexpected result: {loggedOn.Result}. Aborting.");
                 Abort();
                 return;
             }
 
             Console.WriteLine(" Done!");
-             Logger.Info($"Successfully logged on to Steam. Account: {steamUser.SteamID?.Render()}, CellID: {loggedOn.CellID}");
+            Logger.Info($"Successfully logged on to Steam. Account: {steamUser.SteamID?.Render()}, CellID: {loggedOn.CellID}");
 
             this.seq++;
             IsLoggedOn = true;
@@ -835,55 +837,55 @@ namespace DepotDumper
             if (DepotDumper.Config.CellID == 0)
             {
                 Console.WriteLine("Using Steam3 suggested CellID: " + loggedOn.CellID);
-                 Logger.Info($"Using suggested CellID: {loggedOn.CellID}");
+                Logger.Info($"Using suggested CellID: {loggedOn.CellID}");
                 DepotDumper.Config.CellID = (int)loggedOn.CellID;
             }
 
-             Logger.Debug("Logon successful. Expecting LicenseListCallback.");
+            Logger.Debug("Logon successful. Expecting LicenseListCallback.");
         }
 
 
-        private void LicenseListCallback(SteamApps.LicenseListCallback licenseList)
+        public void LicenseListCallback(SteamApps.LicenseListCallback licenseList)
         {
-             Logger.Info($"LicenseListCallback received. Result: {licenseList.Result}");
+            Logger.Info($"LicenseListCallback received. Result: {licenseList.Result}");
 
-             try
-             {
-                 if (licenseList.Result != EResult.OK)
-                 {
-                     Console.WriteLine("Unable to get license list: {0} ", licenseList.Result);
-                     Logger.Error($"Failed to get license list: {licenseList.Result}");
-                     _licenseListTcs.TrySetException(new Exception($"Failed to get license list: {licenseList.Result}"));
-                     Abort();
-                     return;
-                 }
+            try
+            {
+                if (licenseList.Result != EResult.OK)
+                {
+                    Console.WriteLine("Unable to get license list: {0} ", licenseList.Result);
+                    Logger.Error($"Failed to get license list: {licenseList.Result}");
+                    _licenseListTcs.TrySetException(new Exception($"Failed to get license list: {licenseList.Result}"));
+                    Abort();
+                    return;
+                }
 
-                 Console.WriteLine("Got {0} licenses for account!", licenseList.LicenseList.Count);
-                 Logger.Info($"Received {licenseList.LicenseList.Count} licenses.");
-                 Licenses = licenseList.LicenseList;
+                Console.WriteLine("Got {0} licenses for account!", licenseList.LicenseList.Count);
+                Logger.Info($"Received {licenseList.LicenseList.Count} licenses.");
+                Licenses = licenseList.LicenseList;
 
-                 PackageTokens.Clear();
-                 foreach (var license in licenseList.LicenseList)
-                 {
-                     if (license.AccessToken > 0)
-                     {
-                         PackageTokens[license.PackageID] = license.AccessToken;
-                     }
-                 }
-                 Logger.Info($"Processed {PackageTokens.Count} package tokens from license list.");
+                PackageTokens.Clear();
+                foreach (var license in licenseList.LicenseList)
+                {
+                    if (license.AccessToken > 0)
+                    {
+                        PackageTokens[license.PackageID] = license.AccessToken;
+                    }
+                }
+                Logger.Info($"Processed {PackageTokens.Count} package tokens from license list.");
 
-                 _licenseListTcs.TrySetResult(true);
-             }
-             catch (Exception ex)
-             {
-                 Logger.Error($"Exception in LicenseListCallback: {ex}");
-                 _licenseListTcs.TrySetException(ex);
-                 Abort();
-             }
+                _licenseListTcs.TrySetResult(true);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Exception in LicenseListCallback: {ex}");
+                _licenseListTcs.TrySetException(ex);
+                Abort();
+            }
         }
 
 
-        private static void DisplayQrCode(string challengeUrl)
+        public static void DisplayQrCode(string challengeUrl)
         {
             using var qrGenerator = new QRCodeGenerator();
             var qrCodeData = qrGenerator.CreateQrCode(challengeUrl, QRCodeGenerator.ECCLevel.L);
@@ -915,11 +917,11 @@ namespace DepotDumper
                 sb.AppendLine();
             }
 
-             for (int qy = 0; qy < quietZoneSize; qy++)
-             {
-                 for (int qx = 0; qx < (size + 2 * quietZoneSize) * moduleSize; qx++) sb.Append(lightBlock);
-                 sb.AppendLine();
-             }
+            for (int qy = 0; qy < quietZoneSize; qy++)
+            {
+                for (int qx = 0; qx < (size + 2 * quietZoneSize) * moduleSize; qx++) sb.Append(lightBlock);
+                sb.AppendLine();
+            }
 
             Console.WriteLine();
             Console.WriteLine("Use the Steam Mobile App to sign in with this QR code:");
