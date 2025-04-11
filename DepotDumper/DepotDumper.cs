@@ -1689,7 +1689,6 @@ namespace DepotDumper
                 currentCdnPool?.Shutdown();
             }
         }
-        // This is a patched version of the DumpAppAsync method in DepotDumper.cs
         public static async Task DumpAppAsync(bool select, uint specificAppId = INVALID_APP_ID)
         {
             var dumpPath = string.IsNullOrWhiteSpace(Config.DumpDirectory) ? DEFAULT_DUMP_DIR : Config.DumpDirectory;
@@ -1921,12 +1920,12 @@ namespace DepotDumper
                     if (steam3.Licenses != null)
                     {
                         // Group licenses into batches to request package info more efficiently
-                        const int batchSize = 100;
+                        const int batchSize = 500; // Increased from 100 to 500
                         var licenseBatches = new List<List<uint>>();
                         var currentBatch = new List<uint>();
 
-                        // Create batches of license IDs (limit to first 200 for speed)
-                        foreach (var license in steam3.Licenses.Take(200))
+                        // Create batches of license IDs (processing ALL licenses, no Take() limit)
+                        foreach (var license in steam3.Licenses)
                         {
                             currentBatch.Add(license.PackageID);
 
@@ -1972,8 +1971,8 @@ namespace DepotDumper
                     Logger.Info($"Found {allAppIds.Count} apps in licenses to process");
                     Console.WriteLine($"Found {allAppIds.Count} apps in licenses to process");
 
-                    // Just take the first few apps we find
-                    foreach (var appId in allAppIds.Take(15))
+                    // Process ALL found apps, no Take() limit
+                    foreach (var appId in allAppIds)
                     {
                         try
                         {
