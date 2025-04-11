@@ -121,6 +121,57 @@ namespace DepotDumper
             };
             return appinfo.Children.FirstOrDefault(c => c.Name == section_key) ?? KeyValue.Invalid;
         }
+        public static async Task<uint> GetParentAppIdAsync(uint appId)
+        {
+            try
+            {
+                // First check if we already know this is a DLC via our helper method
+                var (isDlc, parentId) = await DlcDetection.DetectDlcAndParentAsync(steam3, appId);
+
+                if (isDlc && parentId != appId)
+                {
+                    Logger.Info($"App {appId} is a DLC for app {parentId}");
+                    return parentId;
+                }
+
+                // Look in the app's common section for DLCForAppID
+                await steam3.RequestAppInfo(appId);
+                var commonSection = GetSteam3AppSection(appId, EAppInfoSection.Common);
+                if (commonSection != null && commonSection != KeyValue.Invalid)
+                {
+                    var typeNode = commonSection["type"];
+                    if (typeNode != KeyValue.Invalid && typeNode.Value != null &&
+                        typeNode.Value.Equals("dlc", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var dlcForAppIdNode = commonSection["DLCForAppID"];
+                        if (dlcForAppIdNode != KeyValue.Invalid && dlcForAppIdNode.Value != null)
+                        {
+                            if (uint.TryParse(dlcForAppIdNode.Value, out uint dlcParentId) && dlcParentId != 0)
+                            {
+                                Logger.Info($"App {appId} is a DLC for app {dlcParentId} (from DLCForAppID)");
+                                return dlcParentId;
+                            }
+                        }
+                    }
+                }
+
+                // Check if this app is marked in our DLC info
+                if (IsDlc(appId, out uint storedParentId) && storedParentId != appId)
+                {
+                    Logger.Info($"App {appId} is a DLC for app {storedParentId} (from stored info)");
+                    return storedParentId;
+                }
+
+                // No parent found, return the original app ID
+                return appId;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error determining parent app ID for {appId}: {ex.Message}");
+                return appId; // Default to itself if we can't determine parent
+            }
+        }
+
         static async Task<(bool ShouldProcess, DateTime? LastUpdated)> ShouldProcessAppExtendedAsync(uint appId)
         {
             try
@@ -1052,8 +1103,14 @@ namespace DepotDumper
             catch (Exception ex) { Logger.Error($"Error updating Lua file {filePath}: {ex.ToString()}"); }
             await Task.CompletedTask;
         }
-        private static async Task ProcessManifestIndividuallyAsync(uint depotId, uint appId, ulong manifestId, string branch, string path, string depotKeyHex, DateTime manifestDate, Dictionary<uint, string> appDlcInfo, CDNClientPool cdnPoolInstance)
+        private static async Task ProcessManifestIndividuallyAsync(uint depotId, uint appId, ulong manifestId, string branch, string path, string depotKeyHex, DateTime manifestDate, Dictionary<uint, string> appDlcInfo, CDNClientPool cdnPoolInstance, uint directoryAppId = 0)
         {
+            // Default directoryAppId to appId if not provided
+            if (directoryAppId == 0)
+            {
+                directoryAppId = appId;
+            }
+
             bool manifestDownloaded = false;
             bool manifestSkipped = false;
             List<string> manifestErrors = new List<string>();
@@ -1073,8 +1130,8 @@ namespace DepotDumper
             try
             {
                 var cleanBranchName = branch.Replace('/', '_').Replace('\\', '_');
-                // Use the consistent appId for path construction
-                var appPath = Path.Combine(path, appId.ToString());
+                // Use the directory app ID (parent) for path construction
+                var appPath = Path.Combine(path, directoryAppId.ToString());
                 var branchPath = Path.Combine(appPath, cleanBranchName);
                 Directory.CreateDirectory(branchPath);
                 var manifestFilename = $"{depotId}_{manifestId}.manifest";
@@ -1124,9 +1181,10 @@ namespace DepotDumper
                                 Logger.Debug($"Manifest {manifestId}: Using API date ({definitiveDate}) because manifest creation time is invalid for skipped manifest.");
                             }
 
-                            string branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
+                            // Use directory app ID (parent) in LUA file path
+                            string branchLuaFile = Path.Combine(branchPath, $"{directoryAppId}.lua");
                             Console.WriteLine($"Updating Lua file for existing manifest {manifestId} in branch '{branch}'");
-                            await UpdateLuaFileWithDlcAsync(branchLuaFile, appId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
+                            await UpdateLuaFileWithDlcAsync(branchLuaFile, directoryAppId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
                         }
                         else
                         {
@@ -1180,8 +1238,10 @@ namespace DepotDumper
                             }
 
                             Logger.Info($"Successfully saved manifest {manifestId} from branch '{branch}' to {fullManifestPath}");
-                            string branchLuaFile = Path.Combine(branchPath, $"{appId}.lua");
-                            await UpdateLuaFileWithDlcAsync(branchLuaFile, appId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
+
+                            // Use directory app ID (parent) in LUA file path
+                            string branchLuaFile = Path.Combine(branchPath, $"{directoryAppId}.lua");
+                            await UpdateLuaFileWithDlcAsync(branchLuaFile, directoryAppId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
                             anyNewManifests = true;
                             StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, true, false, fullManifestPath, null, manifest.CreationTime);
                             Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} downloaded successfully for depot {depotId} branch '{branch}'");
@@ -1400,8 +1460,16 @@ namespace DepotDumper
 
             try
             {
-                // Use the provided app ID for all operations
+                // First determine if this app is a DLC and get its parent ID
+                uint parentAppId = await GetParentAppIdAsync(appId);
+
+                // Use the provided app ID for API operations, but parent app ID for directory structure
                 uint effectiveAppId = appId;
+                uint directoryAppId = parentAppId; // Use parent app ID for directory structure
+
+                Logger.Info($"Dumping depot {depotId} for app {effectiveAppId}" +
+                            (parentAppId != appId ? $" (child of {parentAppId})" : ""));
+
                 currentCdnPool = new CDNClientPool(steam3, appId);
 
                 // Request depot key using consistent app context
@@ -1423,11 +1491,29 @@ namespace DepotDumper
 
                 string depotKeyHex = string.Concat(depotKey.Select(b => b.ToString("X2")).ToArray());
 
-                // Use the effective app ID for paths
-                string appDumpPath = Path.Combine(path, effectiveAppId.ToString());
+                // Use parent app ID for directory paths but maintain the original app ID in filenames
+                string appDumpPath = Path.Combine(path, directoryAppId.ToString());
                 Directory.CreateDirectory(appDumpPath);
 
-                var keyFilePath = Path.Combine(appDumpPath, $"{effectiveAppId.ToString()}.key");
+                // Save a mapping file to track the DLC relationship if this is a DLC
+                if (parentAppId != appId)
+                {
+                    string dlcInfoPath = Path.Combine(appDumpPath, $"{appId}.dlcinfo");
+                    string parentAppName = GetAppName(parentAppId);
+                    string appName = GetAppName(appId);
+                    File.WriteAllText(dlcInfoPath, $"{appId};{appName};DLC_For_{parentAppId}");
+                    Logger.Info($"Created DLC info file for app {appId} -> parent {parentAppId}");
+
+                    // Also create parent info file if it doesn't exist
+                    string parentInfoPath = Path.Combine(appDumpPath, $"{parentAppId}.info");
+                    if (!File.Exists(parentInfoPath))
+                    {
+                        File.WriteAllText(parentInfoPath, $"{parentAppId};{parentAppName}");
+                        Logger.Info($"Created parent app info file for app {parentAppId}");
+                    }
+                }
+
+                var keyFilePath = Path.Combine(appDumpPath, $"{parentAppId.ToString()}.key");
                 bool keyExists = false;
 
                 if (File.Exists(keyFilePath))
@@ -1499,8 +1585,8 @@ namespace DepotDumper
                     {
                         try
                         {
-                            // Use the same consistent app ID for all operations
-                            await ProcessManifestIndividuallyAsync(depotId, effectiveAppId, manifestId, branch, path, depotKeyHex, manifestDate, appDlcInfo, currentCdnPool);
+                            // Use the parent app ID for file structure but maintain the original app context
+                            await ProcessManifestIndividuallyAsync(depotId, effectiveAppId, manifestId, branch, path, depotKeyHex, manifestDate, appDlcInfo, currentCdnPool, directoryAppId);
                         }
                         finally
                         {
@@ -1558,6 +1644,37 @@ namespace DepotDumper
                     var appName = GetAppName(specificAppId);
                     if (string.IsNullOrEmpty(appName)) appName = "Unknown_App";
 
+                    // Determine if this is a DLC and find its parent app ID
+                    uint parentAppId = await GetParentAppIdAsync(specificAppId);
+                    bool isDlc = parentAppId != specificAppId;
+
+                    // Use parent app ID for directory structure if this is a DLC
+                    uint directoryAppId = isDlc ? parentAppId : specificAppId;
+
+                    // If this is a DLC, make sure we have the parent app's info too
+                    if (isDlc)
+                    {
+                        await steam3?.RequestAppInfo(parentAppId);
+                        var parentAppName = GetAppName(parentAppId);
+
+                        Console.WriteLine($"App {specificAppId} ({appName}) is a DLC for app {parentAppId} ({parentAppName})");
+                        Logger.Info($"App {specificAppId} ({appName}) is a DLC for app {parentAppId} ({parentAppName})");
+
+                        // Create parent directory
+                        Directory.CreateDirectory(Path.Combine(dumpPath, parentAppId.ToString()));
+
+                        // Create DLC info file
+                        string dlcInfoPath = Path.Combine(dumpPath, parentAppId.ToString(), $"{specificAppId}.dlcinfo");
+                        File.WriteAllText(dlcInfoPath, $"{specificAppId};{appName};DLC_For_{parentAppId}");
+
+                        // Create parent info file if it doesn't exist
+                        string parentInfoPath = Path.Combine(dumpPath, parentAppId.ToString(), $"{parentAppId}.info");
+                        if (!File.Exists(parentInfoPath))
+                        {
+                            File.WriteAllText(parentInfoPath, $"{parentAppId};{parentAppName}");
+                        }
+                    }
+
                     (bool shouldProcess, var appLastUpdated) = await ShouldProcessAppExtendedAsync(specificAppId);
 
                     // Simplified DLC handling - no need for complex parent/child relationship detection
@@ -1566,7 +1683,8 @@ namespace DepotDumper
                     appDlcInfo = await GetAppDlcInfoAsync(specificAppId);
                     Logger.Debug($"Fetched {appDlcInfo.Count} DLCs (without depots) for app {specificAppId}.");
 
-                    Directory.CreateDirectory(Path.Combine(dumpPath, specificAppId.ToString()));
+                    // Create directory using the appropriate app ID (parent for DLCs, self for normal apps)
+                    Directory.CreateDirectory(Path.Combine(dumpPath, directoryAppId.ToString()));
 
                     var depots = GetSteam3AppSection(specificAppId, EAppInfoSection.Depots);
                     if (depots == null || depots == KeyValue.Invalid)
@@ -1592,9 +1710,15 @@ namespace DepotDumper
                     else
                         Console.WriteLine($"Dumping app {specificAppId}: {appName} (Last updated: {appLastUpdated.Value:yyyy-MM-dd HH:mm:ss})");
 
-                    // Write app info to file
-                    string infoFilePath = Path.Combine(dumpPath, specificAppId.ToString(), $"{specificAppId.ToString()}.info");
-                    File.WriteAllText(infoFilePath, $"{specificAppId};{appName}");
+                    // Write app info to file - use directory app ID (parent for DLCs)
+                    string infoFilePath = Path.Combine(dumpPath, directoryAppId.ToString(),
+                        isDlc ? $"{specificAppId}.dlcinfo" : $"{specificAppId.ToString()}.info");
+
+                    string infoContent = isDlc ?
+                        $"{specificAppId};{appName};DLC_For_{parentAppId}" :
+                        $"{specificAppId};{appName}";
+
+                    File.WriteAllText(infoFilePath, infoContent);
 
                     // Process each depot with the app ID as context
                     foreach (var depotSection in depots.Children)
@@ -1638,7 +1762,7 @@ namespace DepotDumper
                     // Process DLC entries in Lua
                     if (appDlcInfo != null && appDlcInfo.Count > 0 && processedBranches.Count > 0)
                     {
-                        Logger.Info($"Appending {appDlcInfo.Count} DLC entries to Lua files for parent app {specificAppId} across {processedBranches.Count} processed branches.");
+                        Logger.Info($"Appending {appDlcInfo.Count} DLC entries to Lua files for parent app {directoryAppId} across {processedBranches.Count} processed branches.");
                         var dlcLinesToAdd = new List<string>();
                         dlcLinesToAdd.Add("");
                         dlcLinesToAdd.Add("-- Discovered DLCs (without depots)");
@@ -1649,7 +1773,7 @@ namespace DepotDumper
 
                         foreach (var branchName in processedBranches)
                         {
-                            string luaFilePath = Path.Combine(dumpPath, specificAppId.ToString(), branchName, $"{specificAppId}.lua");
+                            string luaFilePath = Path.Combine(dumpPath, directoryAppId.ToString(), branchName, $"{directoryAppId}.lua");
                             Logger.Debug($"Checking Lua file for final DLC append: {luaFilePath}");
                             if (File.Exists(luaFilePath))
                             {
@@ -1685,7 +1809,8 @@ namespace DepotDumper
                             Logger.Info($"No branches were processed for app {specificAppId}, skipping final Lua append step.");
                     }
 
-                    await CreateZipsForApp(specificAppId, dumpPath, appName);
+                    // Use the directory app ID (parent for DLCs) for zip creation
+                    await CreateZipsForApp(directoryAppId, dumpPath, isDlc ? GetAppName(parentAppId) : appName);
                     CleanupEmptyDirectories(dumpPath);
                     StatisticsTracker.TrackAppCompletion(specificAppId, true);
 
@@ -1711,7 +1836,6 @@ namespace DepotDumper
                 return;
             }
         }
-
         private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint parentAppId, bool select, string dumpPath, Dictionary<uint, string> appDlcInfo, DateTime? appLastUpdated)
         {
             string appName = $"App {currentAppId}";
@@ -1825,7 +1949,7 @@ namespace DepotDumper
             Console.WriteLine($"Creating zip archives for {processedBranches.Count} branches of app {appId} ('{appName}')");
             Logger.Info($"Creating zip archives for {processedBranches.Count} branches of app {appId} ('{appName}')");
 
-            // NEW CODE: Debug dump of branchLastModified dictionary
+            // Debug dump of branchLastModified dictionary
             Logger.Debug($"Contents of branchLastModified dictionary:");
             foreach (var kvp in branchLastModified)
             {
@@ -1838,6 +1962,20 @@ namespace DepotDumper
             string infoFilePath = Path.Combine(appPath, $"{appId}.info");
             // Also check for potential DLC info file using the same appId path context
             string dlcInfoFilePath = Path.Combine(appPath, $"{appId}.dlcinfo");
+
+            // First, let's collect all DLCs with no depots for this app
+            Dictionary<uint, string> appDlcInfo = null;
+            try
+            {
+                // Get DLCs with no depots
+                appDlcInfo = await GetDlcInfoViaSteamKitOnlyAsync(appId);
+                Logger.Debug($"Found {appDlcInfo.Count} DLCs without depots for app {appId}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error getting DLC info for app {appId}: {ex.Message}");
+                appDlcInfo = new Dictionary<uint, string>();
+            }
 
             try
             {
@@ -1949,10 +2087,59 @@ namespace DepotDumper
             // Make sure safe app name doesn't contain periods since they break folder name parsing
             safeAppName = safeAppName.Replace('.', '_');
 
+            // Process DLC entries in Lua - do this before creating zips
+            if (appDlcInfo != null && appDlcInfo.Count > 0 && processedBranches.Count > 0)
+            {
+                Logger.Info($"Appending {appDlcInfo.Count} DLC entries to Lua files for app {appId} across {processedBranches.Count} processed branches.");
+                var dlcLinesToAdd = new List<string>();
+                dlcLinesToAdd.Add("");
+                foreach (var dlcEntry in appDlcInfo.OrderBy(kvp => kvp.Key))
+                {
+                    dlcLinesToAdd.Add($"addappid({dlcEntry.Key}) -- {dlcEntry.Value}");
+                }
+
+                foreach (var branchName in processedBranches)
+                {
+                    string luaFilePath = Path.Combine(appPath, branchName, $"{appId}.lua");
+                    Logger.Debug($"Checking Lua file for final DLC append: {luaFilePath}");
+                    if (File.Exists(luaFilePath))
+                    {
+                        try
+                        {
+                            List<string> existingLines = File.ReadAllLines(luaFilePath).ToList();
+                            var dlcLinePrefixes = new HashSet<string>(appDlcInfo.Keys.Select(k => $"addappid({k})"));
+                            List<string> linesToWrite = existingLines.Where(line => !dlcLinePrefixes.Any(prefix => line.TrimStart().StartsWith(prefix))).ToList();
+                            linesToWrite.AddRange(dlcLinesToAdd);
+                            File.WriteAllLines(luaFilePath, linesToWrite);
+                            Logger.Info($"Successfully appended {appDlcInfo.Count} DLC entries to {Path.GetFileName(luaFilePath)} in branch '{branchName}'.");
+                        }
+                        catch (IOException ioEx)
+                        {
+                            Logger.Error($"IO Error finalizing DLC entries in Lua file {luaFilePath}: {ioEx.Message}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error($"Error finalizing DLC entries in Lua file {luaFilePath}: {ex.ToString()}");
+                        }
+                    }
+                    else
+                    {
+                        Logger.Warning($"Lua file not found for final DLC append: {luaFilePath}. Skipping append for this branch.");
+                    }
+                }
+            }
+            else
+            {
+                if (appDlcInfo == null || appDlcInfo.Count == 0)
+                    Logger.Info($"No DLCs found or fetched for app {appId}, skipping DLC append step.");
+                if (processedBranches.Count == 0)
+                    Logger.Info($"No branches were processed for app {appId}, skipping DLC append step.");
+            }
+
             // Use a different variable name in the loop to avoid conflict
             foreach (var branchName in processedBranches)
             {
-                // NEW CODE: Debug check if branch is in the dictionary
+                // Debug check if branch is in the dictionary
                 Logger.Debug($"Branch '{branchName}' in processedBranches: {processedBranches.Contains(branchName)}");
                 Logger.Debug($"Branch '{branchName}' in branchLastModified: {branchLastModified.ContainsKey(branchName)}");
 
@@ -2013,25 +2200,38 @@ namespace DepotDumper
                     Directory.CreateDirectory(tempDir);
                     int manifestsIncluded = 0;
                     int luaFilesIncluded = 0;
-                    int keyFilesIncluded = 0;
-                    int infoFilesIncluded = 0;
+
+                    // Define blacklisted file extensions
+                    var blacklistedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".dlcinfo",
+                ".key",
+                ".info"
+            };
 
                     // Files to include are typically within the branchSourcePath
                     foreach (var file in Directory.EnumerateFiles(branchSourcePath))
                     {
                         string fileName = Path.GetFileName(file);
-                        // Check if the file matches patterns for manifests, lua, key, info
-                        // Note: Key/Info files might be one level up in appPath, adjust if needed
-                        if (fileName.EndsWith(".manifest") || fileName.EndsWith(".lua") || fileName.EndsWith(".key") ||
-                            fileName.EndsWith(".info") || fileName.EndsWith(".dlcinfo"))
+                        string extension = Path.GetExtension(fileName);
+
+                        // Skip blacklisted file extensions
+                        if (blacklistedExtensions.Contains(extension))
+                        {
+                            Logger.Debug($"Skipping blacklisted file: {fileName}");
+                            continue;
+                        }
+
+                        // Include only manifest and lua files
+                        if (fileName.EndsWith(".manifest") || fileName.EndsWith(".lua"))
                         {
                             try
                             {
                                 File.Copy(file, Path.Combine(tempDir, fileName), true);
-                                if (fileName.EndsWith(".manifest")) manifestsIncluded++;
-                                else if (fileName.EndsWith(".lua")) luaFilesIncluded++;
-                                else if (fileName.EndsWith(".key")) keyFilesIncluded++; // Keys are usually per-depot, might not be here
-                                else if (fileName.EndsWith(".info") || fileName.EndsWith(".dlcinfo")) infoFilesIncluded++; // Info files might be one level up
+                                if (fileName.EndsWith(".manifest"))
+                                    manifestsIncluded++;
+                                else if (fileName.EndsWith(".lua"))
+                                    luaFilesIncluded++;
                             }
                             catch (IOException ex)
                             {
@@ -2041,10 +2241,12 @@ namespace DepotDumper
                         }
                     }
 
+                    // Skip copying files from app directory since they'd all be blacklisted
+
                     if (Directory.EnumerateFileSystemEntries(tempDir).Any())
                     {
                         Logger.Info($"Creating zip for branch '{branchName}' with {manifestsIncluded} manifests, " +
-                                    $"{luaFilesIncluded} lua, {keyFilesIncluded} key, {infoFilesIncluded} info files at {zipFilePath}");
+                                    $"{luaFilesIncluded} lua files at {zipFilePath}");
                         CreateZipArchive(tempDir, zipFilePath);
                     }
                     else
