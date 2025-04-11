@@ -68,6 +68,7 @@ namespace DepotDumper
         {
             if (steam3 == null || steam3.steamUser.SteamID == null || (steam3.Licenses == null && steam3.steamUser.SteamID.AccountType != EAccountType.AnonUser))
                 return false;
+
             IEnumerable<uint> licenseQuery;
             if (steam3.steamUser.SteamID.AccountType == EAccountType.AnonUser)
             {
@@ -77,15 +78,32 @@ namespace DepotDumper
             {
                 licenseQuery = steam3.Licenses.Select(x => x.PackageID).Distinct();
             }
+
             await steam3.RequestPackageInfo(licenseQuery);
+
+            // Check for packages that contain either the depot directly or the app if checking app ownership
             foreach (var license in licenseQuery)
             {
                 if (steam3.PackageInfo.TryGetValue(license, out var package) && package != null)
                 {
-                    if (package.KeyValues["appids"].Children.Any(child => child.AsUnsignedInteger() == depotId)) return true;
-                    if (package.KeyValues["depotids"].Children.Any(child => child.AsUnsignedInteger() == depotId)) return true;
+                    // If checking app access directly and the app is in this package
+                    if (appId == depotId && package.KeyValues["appids"].Children.Any(child => child.AsUnsignedInteger() == appId))
+                    {
+                        Logger.Debug($"Account has access to app {appId} through package {license}");
+                        return true;
+                    }
+
+                    // Check for depot access in the standard way
+                    if (package.KeyValues["appids"].Children.Any(child => child.AsUnsignedInteger() == depotId) ||
+                        package.KeyValues["depotids"].Children.Any(child => child.AsUnsignedInteger() == depotId))
+                    {
+                        Logger.Debug($"Account has access to depot {depotId} through package {license}");
+                        return true;
+                    }
                 }
             }
+
+            Logger.Debug($"Account does NOT have access to {(appId == depotId ? $"app {appId}" : $"depot {depotId} (app context {appId})")}");
             return false;
         }
         internal static KeyValue GetSteam3AppSection(uint appId, EAppInfoSection section)
@@ -125,12 +143,50 @@ namespace DepotDumper
                         string appType = typeNode.Value.ToLowerInvariant();
                         Logger.Debug($"App {appId} type from SteamKit: {appType}");
 
-                        // Skip certain app types
-                        if (appType == "demo" || appType == "dlc" || appType == "music" ||
+                        // Skip certain app types but NOT DLCs
+                        if (appType == "demo" || /* removed dlc */ appType == "music" ||
                             appType == "video" || appType == "hardware" || appType == "mod")
                         {
                             Logger.Info($"Skipping app {appId} because its type is '{appType}'.");
                             return (false, null);
+                        }
+
+                        // Special handling for DLCs - check if it has depots and is owned
+                        if (appType == "dlc")
+                        {
+                            // First check if the DLC has any depots
+                            var dlcDepotsSection = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+                            bool hasDepots = false;
+
+                            if (dlcDepotsSection != null && dlcDepotsSection != KeyValue.Invalid)
+                            {
+                                // Look for actual depots (ignoring the "branches" node)
+                                foreach (var child in dlcDepotsSection.Children)
+                                {
+                                    if (child.Name != "branches" && uint.TryParse(child.Name, out _))
+                                    {
+                                        hasDepots = true;
+                                        Logger.Debug($"DLC {appId} has its own depots");
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // If it doesn't have depots, skip it
+                            if (!hasDepots)
+                            {
+                                Logger.Info($"Skipping DLC {appId} because it has no depots");
+                                return (false, null);
+                            }
+
+                            // Otherwise check if the account owns this DLC
+                            if (!await AccountHasAccessAsync(appId, appId))
+                            {
+                                Logger.Info($"Skipping DLC {appId} because the account doesn't own it");
+                                return (false, null);
+                            }
+
+                            Logger.Info($"Processing DLC {appId} - it has depots and is owned by the account");
                         }
                     }
 
@@ -253,19 +309,140 @@ namespace DepotDumper
         static async Task<List<(ulong manifestId, string branch)>> GetManifestsToDumpAsync(uint depotId, uint appId)
         {
             var results = new List<(ulong manifestId, string branch)>();
+
+            // First try to find depots in the app that was passed in
             var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+
+            // For DLCs with a depot ID matching their app ID, check the DLC's own depots section
+            bool isLikelyDlcDepot = depotId > 2000000;
+            if ((depots == null || depots == KeyValue.Invalid || depots[depotId.ToString()] == KeyValue.Invalid) && isLikelyDlcDepot)
+            {
+                Logger.Info($"Depot {depotId} not found in app {appId}, trying to look for it directly using depot ID as app ID");
+                await steam3.RequestAppInfo(depotId);
+
+                // Get the DLC's own depots section
+                var dlcDepots = GetSteam3AppSection(depotId, EAppInfoSection.Depots);
+                if (dlcDepots != null && dlcDepots != KeyValue.Invalid)
+                {
+                    // Look for branches in the DLC
+                    var branchesNode = dlcDepots["branches"];
+                    if (branchesNode != KeyValue.Invalid)
+                    {
+                        Logger.Info($"Found branches in DLC {depotId}, looking for manifests");
+
+                        // Go through each branch in the DLC
+                        foreach (var branchNode in branchesNode.Children)
+                        {
+                            var branchName = branchNode.Name;
+                            var buildidNode = branchNode["buildid"];
+                            if (buildidNode != KeyValue.Invalid && buildidNode.Value != null)
+                            {
+                                if (ulong.TryParse(buildidNode.Value, out ulong buildId) && buildId != 0)
+                                {
+                                    Logger.Info($"Found buildid {buildId} for branch '{branchName}' in DLC {depotId}, using as manifest ID");
+                                    results.Add((buildId, branchName));
+                                }
+                            }
+                        }
+
+                        // If we found manifests, return them now
+                        if (results.Count > 0)
+                        {
+                            return results;
+                        }
+                    }
+
+                    // If still no manifests, try finding in the DLC's own depot info
+                    var dlcDepotInfo = dlcDepots[depotId.ToString()];
+                    if (dlcDepotInfo != KeyValue.Invalid)
+                    {
+                        var dlcManifests = dlcDepotInfo["manifests"];
+                        if (dlcManifests != KeyValue.Invalid)
+                        {
+                            foreach (var branchNode in dlcManifests.Children)
+                            {
+                                var branch = branchNode.Name;
+                                if (branchNode["gid"] != KeyValue.Invalid)
+                                {
+                                    ulong manifestId = branchNode["gid"].AsUnsignedLong();
+                                    if (manifestId != INVALID_MANIFEST_ID)
+                                    {
+                                        results.Add((manifestId, branch));
+                                        Logger.Info($"Found manifest {manifestId} for depot {depotId} in branch '{branch}' from DLC's own depot info");
+                                    }
+                                }
+                            }
+                        }
+
+                        // Also check encrypted manifests
+                        var dlcManifestsEncrypted = dlcDepotInfo["encryptedmanifests"];
+                        if (dlcManifestsEncrypted != KeyValue.Invalid)
+                        {
+                            foreach (var encryptedBranch in dlcManifestsEncrypted.Children)
+                            {
+                                var branch = encryptedBranch.Name;
+                                if (encryptedBranch["gid"] != KeyValue.Invalid)
+                                {
+                                    Logger.Info($"Found encrypted manifest for depot {depotId} in branch '{branch}' from DLC's depot info");
+                                    Console.Write($"Attempt to get encrypted manifest from branch '{branch}'? (y/n): ");
+                                    var response = Console.ReadLine()?.Trim().ToLowerInvariant();
+                                    if (response == "y" || response == "yes")
+                                    {
+                                        ulong encryptedManifestId = await GetSteam3DepotManifestAsync(depotId, depotId, branch);
+                                        if (encryptedManifestId != INVALID_MANIFEST_ID)
+                                        {
+                                            results.Add((encryptedManifestId, branch));
+                                            Logger.Debug($"Added encrypted manifest {encryptedManifestId} for branch '{branch}'");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // If we found manifests, return them now
+                        if (results.Count > 0)
+                        {
+                            return results;
+                        }
+                    }
+
+                    // If all else fails, try the public branch buildid as a fallback
+                    var publicBranch = branchesNode?["public"];
+                    if (publicBranch != KeyValue.Invalid && publicBranch["buildid"] != KeyValue.Invalid)
+                    {
+                        ulong buildId = publicBranch["buildid"].AsUnsignedLong();
+                        if (buildId != 0)
+                        {
+                            Logger.Info($"Using buildid {buildId} from public branch of DLC {depotId} as manifest ID (fallback)");
+                            results.Add((buildId, "public"));
+                            return results;
+                        }
+                    }
+                }
+
+                // If we reach here, we couldn't find any manifests for the DLC's depot
+                Logger.Warning($"Could not find any manifests for DLC depot {depotId} in its own app info");
+            }
+
+            // Continue with original logic for non-DLC depots
             if (depots == null || depots == KeyValue.Invalid) return results;
+
             var depotChild = depots[depotId.ToString()];
             if (depotChild == KeyValue.Invalid) return results;
+
             if (depotChild["manifests"] == KeyValue.Invalid && depotChild["depotfromapp"] != KeyValue.Invalid)
             {
                 uint otherAppId = depotChild["depotfromapp"].AsUnsignedInteger();
-                if (otherAppId == appId) { Logger.Warning($"Recursive depotfromapp for {depotId}"); return results; }
+                if (otherAppId == appId) { Logger.Warning($"App {appId}, Depot {depotId} has recursive depotfromapp!"); return results; }
                 await steam3.RequestAppInfo(otherAppId);
                 return await GetManifestsToDumpAsync(depotId, otherAppId);
             }
+
             var manifests = depotChild["manifests"];
-            var manifestsEncrypted = depotChild["encryptedmanifests"];
+            var manifests_encrypted = depotChild["encryptedmanifests"];
+
+            if (manifests == KeyValue.Invalid && manifests_encrypted == KeyValue.Invalid) return results;
+
             if (manifests != KeyValue.Invalid)
             {
                 foreach (var branchNode in manifests.Children)
@@ -274,13 +451,18 @@ namespace DepotDumper
                     if (branchNode["gid"] != KeyValue.Invalid)
                     {
                         ulong manifestId = branchNode["gid"].AsUnsignedLong();
-                        if (manifestId != INVALID_MANIFEST_ID) { results.Add((manifestId, branch)); Logger.Debug($"Found manifest {manifestId} for depot {depotId} in branch '{branch}'"); }
+                        if (manifestId != INVALID_MANIFEST_ID)
+                        {
+                            results.Add((manifestId, branch));
+                            Logger.Debug($"Found manifest {manifestId} for depot {depotId} in branch '{branch}'");
+                        }
                     }
                 }
             }
-            if (manifestsEncrypted != KeyValue.Invalid)
+
+            if (manifests_encrypted != KeyValue.Invalid)
             {
-                foreach (var encryptedBranch in manifestsEncrypted.Children)
+                foreach (var encryptedBranch in manifests_encrypted.Children)
                 {
                     var branch = encryptedBranch.Name;
                     if (encryptedBranch["gid"] != KeyValue.Invalid)
@@ -291,13 +473,19 @@ namespace DepotDumper
                         if (response == "y" || response == "yes")
                         {
                             ulong encryptedManifestId = await GetSteam3DepotManifestAsync(depotId, appId, branch);
-                            if (encryptedManifestId != INVALID_MANIFEST_ID) { results.Add((encryptedManifestId, branch)); Logger.Debug($"Added encrypted manifest {encryptedManifestId} for branch '{branch}'"); }
+                            if (encryptedManifestId != INVALID_MANIFEST_ID)
+                            {
+                                results.Add((encryptedManifestId, branch));
+                                Logger.Debug($"Added encrypted manifest {encryptedManifestId} for branch '{branch}'");
+                            }
                         }
                     }
                 }
             }
+
             return results;
         }
+
         static void CreateZipArchive(string sourceDirectory, string zipFilePath)
         {
             try
@@ -1184,14 +1372,23 @@ namespace DepotDumper
             {
                 // Check if this is a DLC and get parent app ID
                 uint effectiveAppId = appId;
+                bool isDlc = false;
+                uint originalAppId = appId;
+
                 if (IsDlc(appId, out uint parentAppId) && parentAppId != appId)
                 {
                     effectiveAppId = parentAppId;
+                    isDlc = true;
+                    originalAppId = appId; // Store the original DLC app ID
                     Logger.Info($"Using parent app {parentAppId} directory for DLC {appId} manifests");
                 }
 
                 currentCdnPool = new CDNClientPool(steam3, appId);
-                await steam3.RequestDepotKey(depotId, appId);
+
+                // Key change - Request using proper context depending on if it's a DLC depot
+                uint keyRequestAppId = isDlc && depotId >= 2000000 ? originalAppId : appId;
+                Logger.Info($"Requesting depot key for depot {depotId} using app context {keyRequestAppId}");
+                await steam3.RequestDepotKey(depotId, keyRequestAppId);
 
                 if (!steam3.DepotKeys.TryGetValue(depotId, out var depotKey))
                 {
@@ -1561,21 +1758,25 @@ namespace DepotDumper
                 if (string.IsNullOrEmpty(appName)) appName = $"Unknown App {currentAppId}";
                 var (appIsDlc, _) = await DlcDetection.DetectDlcAndParentAsync(steam3, currentAppId);
                 var (shouldProcessCurrent, _) = await ShouldProcessAppExtendedAsync(currentAppId);
+
                 if (!shouldProcessCurrent)
                 {
-                    Console.WriteLine("Skipping app {0}: {1} (detected as non-processed type)", currentAppId, appName);
-                    Logger.Info($"Skipping app {currentAppId}: {appName} (detected as non-processed type)");
+                    Console.WriteLine("Skipping app {0}: {1} (detected as non-processed type or doesn't have depots)", currentAppId, appName);
+                    Logger.Info($"Skipping app {currentAppId}: {appName} (detected as non-processed type or doesn't have depots)");
                     return;
                 }
+
                 var depots = GetSteam3AppSection(currentAppId, EAppInfoSection.Depots);
                 if (depots == null || depots == KeyValue.Invalid)
                 {
                     Logger.Warning($"No depots section found for app {currentAppId} within group {parentAppId}, skipping its depots.");
                     return;
                 }
+
                 Console.WriteLine($"Dumping app {currentAppId}: {appName} (Parent Context: {parentAppId})");
                 string infoFilePath = Path.Combine(dumpPath, parentAppId.ToString(), $"{currentAppId.ToString()}.{(appIsDlc ? "dlcinfo" : "info")}");
                 File.WriteAllText(infoFilePath, $"{currentAppId};{appName}{(appIsDlc ? $";DLC_For_{parentAppId}" : "")}");
+
                 foreach (var depotSection in depots.Children)
                 {
                     if (!uint.TryParse(depotSection.Name, out uint id) || id == uint.MaxValue || depotSection.Name == "branches" || depotSection.Children.Count == 0) continue;

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using SteamKit2; // Add this import for KeyValue and EAppInfoSection
 
 namespace DepotDumper
 {
@@ -89,6 +90,76 @@ namespace DepotDumper
                     // Return default non-DLC result
                     return (false, appId);
                 }
+            }
+        }
+        
+        /// <summary>
+        /// Checks if a DLC has its own depots
+        /// </summary>
+        /// <param name="dlcAppId">The DLC app ID to check</param>
+        /// <returns>True if the DLC has its own depots, false otherwise</returns>
+        public static async Task<bool> DlcHasDepotsAsync(uint dlcAppId)
+        {
+            try
+            {
+                // Make sure we have the Steam3 session
+                if (DepotDumper.steam3 == null || !DepotDumper.steam3.IsLoggedOn)
+                {
+                    Logger.Warning("Cannot check if DLC has depots: Steam session not available");
+                    return false;
+                }
+
+                await DepotDumper.steam3.RequestAppInfo(dlcAppId);
+
+                // Check if the DLC has its own depots section
+                var depotsSection = DepotDumper.GetSteam3AppSection(dlcAppId, EAppInfoSection.Depots);
+                if (depotsSection != null && depotsSection != KeyValue.Invalid)
+                {
+                    // Look for actual depots (ignoring the "branches" node which isn't a depot)
+                    foreach (var child in depotsSection.Children)
+                    {
+                        if (child.Name != "branches" && uint.TryParse(child.Name, out _))
+                        {
+                            Logger.Debug($"DLC {dlcAppId} has its own depot: {child.Name}");
+                            return true;
+                        }
+                    }
+                }
+
+                // Try an alternative approach to check for depots
+                // Method 2: Check for DLC depots in the parent app's depots section
+                var (isDlc, parentAppId) = await DetectDlcAndParentAsync(DepotDumper.steam3, dlcAppId);
+                if (isDlc && parentAppId != dlcAppId)
+                {
+                    await DepotDumper.steam3.RequestAppInfo(parentAppId);
+                    var parentDepotsSection = DepotDumper.GetSteam3AppSection(parentAppId, EAppInfoSection.Depots);
+                    
+                    if (parentDepotsSection != null && parentDepotsSection != KeyValue.Invalid)
+                    {
+                        foreach (var child in parentDepotsSection.Children)
+                        {
+                            if (child.Name == "branches" || !uint.TryParse(child.Name, out _))
+                                continue;
+
+                            var dlcAppIdNode = child["dlcappid"];
+                            if (dlcAppIdNode != KeyValue.Invalid &&
+                                uint.TryParse(dlcAppIdNode.Value, out uint depotDlcId) &&
+                                depotDlcId == dlcAppId)
+                            {
+                                Logger.Debug($"Found depot for DLC {dlcAppId} in parent app's depots (dlcappid reference)");
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                Logger.Debug($"DLC {dlcAppId} does not have its own depots");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error checking if DLC {dlcAppId} has depots: {ex.Message}");
+                return false;
             }
         }
         
@@ -447,4 +518,3 @@ namespace DepotDumper
         }
     }
 }
-
