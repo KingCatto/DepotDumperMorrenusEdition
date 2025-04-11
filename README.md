@@ -52,7 +52,6 @@ You can configure DepotDumper through:
 
 #### Dumping Options:
 - `-appid <#>` - Dump ONLY depots for this specific App ID
-- `-appids-file <path>` - Dump ONLY depots for App IDs listed in the file
 - `-select` - Interactively select depots to dump
 
 #### Configuration & Output Options:
