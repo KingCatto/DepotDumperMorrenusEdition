@@ -1023,86 +1023,162 @@ namespace DepotDumper
             return dlcAppIds;
         }
         private static async Task UpdateLuaFileWithDlcAsync(string filePath, uint appId, uint depotId, string depotKeyHex, ulong manifestId, Dictionary<uint, string> dlcAppIds)
+{
+    try
+    {
+        // Create directory if it doesn't exist
+        string directoryPath = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(directoryPath))
         {
-            try
+            Directory.CreateDirectory(directoryPath);
+        }
+
+        // Keep track of which apps we've already added
+        HashSet<uint> processedAppIds = new HashSet<uint>();
+        Dictionary<uint, string> processedDepotKeys = new Dictionary<uint, string>();
+        Dictionary<uint, string> processedManifestIds = new Dictionary<uint, string>();
+        
+        // Add the entries we know about from parameters
+        processedAppIds.Add(appId);
+        if (!string.IsNullOrEmpty(depotKeyHex))
+        {
+            processedDepotKeys[depotId] = depotKeyHex;
+        }
+        processedManifestIds[depotId] = manifestId.ToString();
+        
+        // Process existing content if file exists
+        if (File.Exists(filePath))
+        {
+            foreach (string line in File.ReadAllLines(filePath))
             {
-                string directoryPath = Path.GetDirectoryName(filePath);
-                if (!string.IsNullOrEmpty(directoryPath))
+                string trimmedLine = line.Trim();
+                
+                // Skip empty lines and pure comment lines
+                if (string.IsNullOrWhiteSpace(trimmedLine) || (trimmedLine.StartsWith("--") && !trimmedLine.Contains("addappid(")))
                 {
-                    Directory.CreateDirectory(directoryPath);
+                    continue;
                 }
-                bool hasAppId = false;
-                bool hasDepotKey = false;
-                bool hasManifestId = false;
-                string manifestLine = $"setManifestid({depotId}, \"{manifestId}\", 0)";
-                List<string> updatedLines = new List<string>();
-                HashSet<string> uniqueLinesTracker = new HashSet<string>(StringComparer.Ordinal);
-                if (File.Exists(filePath))
+
+                // Process app ID lines
+                if (trimmedLine.StartsWith("addappid("))
                 {
-                    string[] existingLines = File.ReadAllLines(filePath);
-                    foreach (string line in existingLines)
+                    int startPos = "addappid(".Length;
+                    int endPos;
+                    
+                    // Check if it has a depot key (has a comma)
+                    if (trimmedLine.Contains(","))
                     {
-                        string trimmedLine = line.Trim();
-                        bool isLikelyOldDlc = trimmedLine.StartsWith("addappid(") && !trimmedLine.Contains(",");
-                        if (string.IsNullOrWhiteSpace(line) || (trimmedLine.StartsWith("--") && !isLikelyOldDlc))
+                        // This is a depot line with key
+                        endPos = trimmedLine.IndexOf(',');
+                        if (startPos < endPos && uint.TryParse(trimmedLine.Substring(startPos, endPos - startPos), out uint depotId2))
                         {
-                            updatedLines.Add(line);
-                            continue;
+                            // Extract the key if present
+                            int keyStartPos = trimmedLine.IndexOf('"');
+                            int keyEndPos = trimmedLine.LastIndexOf('"');
+                            if (keyStartPos >= 0 && keyEndPos > keyStartPos)
+                            {
+                                string key = trimmedLine.Substring(keyStartPos + 1, keyEndPos - keyStartPos - 1);
+                                processedDepotKeys[depotId2] = key;
+                            }
                         }
-                        if (isLikelyOldDlc)
+                    }
+                    else
+                    {
+                        // This is a regular app ID line
+                        endPos = trimmedLine.IndexOf(')');
+                        if (startPos < endPos && uint.TryParse(trimmedLine.Substring(startPos, endPos - startPos), out uint appId2))
                         {
-                            Logger.Debug($"Skipping existing potential DLC line: {line}");
-                            continue;
-                        }
-                        if (trimmedLine.Equals($"addappid({appId})"))
-                        {
-                            if (uniqueLinesTracker.Add(trimmedLine)) { updatedLines.Add(line); hasAppId = true; }
-                            else { Logger.Debug($"Duplicate base app ID line skipped: {line}"); }
-                        }
-                        else if (!string.IsNullOrEmpty(depotKeyHex) && trimmedLine.StartsWith($"addappid({depotId}, 1,"))
-                        {
-                            string updatedDepotLine = $"addappid({depotId}, 1, \"{depotKeyHex}\")";
-                            if (uniqueLinesTracker.Add(updatedDepotLine)) { updatedLines.Add(updatedDepotLine); hasDepotKey = true; }
-                            else { Logger.Debug($"Duplicate depot key line skipped: {updatedDepotLine}"); }
-                            hasDepotKey = true;
-                        }
-                        else if (trimmedLine.StartsWith($"setManifestid({depotId},"))
-                        {
-                            if (uniqueLinesTracker.Add(manifestLine)) { updatedLines.Add(manifestLine); hasManifestId = true; }
-                            else { Logger.Debug($"Duplicate manifest line skipped: {manifestLine}"); }
-                            hasManifestId = true;
-                        }
-                        else if (uniqueLinesTracker.Add(trimmedLine))
-                        {
-                            updatedLines.Add(line);
-                        }
-                        else
-                        {
-                            Logger.Debug($"Duplicate other line skipped: {line}");
+                            processedAppIds.Add(appId2);
                         }
                     }
                 }
-                if (!hasAppId)
+                // Process manifest ID lines
+                else if (trimmedLine.StartsWith("setManifestid("))
                 {
-                    string lineToAdd = $"addappid({appId})";
-                    if (uniqueLinesTracker.Add(lineToAdd.Trim())) { updatedLines.Insert(0, lineToAdd); Logger.Debug($"Added missing base AppID line: {lineToAdd}"); }
+                    int startPos = "setManifestid(".Length;
+                    int endPos = trimmedLine.IndexOf(',');
+                    if (startPos < endPos && uint.TryParse(trimmedLine.Substring(startPos, endPos - startPos), out uint depotId2))
+                    {
+                        // Extract the manifest ID
+                        int manifestStartPos = trimmedLine.IndexOf('"', endPos);
+                        int manifestEndPos = trimmedLine.IndexOf('"', manifestStartPos + 1);
+                        if (manifestStartPos >= 0 && manifestEndPos > manifestStartPos)
+                        {
+                            string manifestIdStr = trimmedLine.Substring(manifestStartPos + 1, manifestEndPos - manifestStartPos - 1);
+                            processedManifestIds[depotId2] = manifestIdStr;
+                        }
+                    }
                 }
-                if (!hasDepotKey && !string.IsNullOrEmpty(depotKeyHex))
-                {
-                    string lineToAdd = $"addappid({depotId}, 1, \"{depotKeyHex}\")";
-                    if (uniqueLinesTracker.Add(lineToAdd.Trim())) { updatedLines.Add(lineToAdd); Logger.Debug($"Added missing depot key line: {lineToAdd}"); }
-                }
-                if (!hasManifestId)
-                {
-                    string lineToAdd = manifestLine;
-                    if (uniqueLinesTracker.Add(lineToAdd.Trim())) { updatedLines.Add(lineToAdd); Logger.Debug($"Added missing manifest line: {lineToAdd}"); }
-                }
-                File.WriteAllLines(filePath, updatedLines);
             }
-            catch (IOException ioEx) { Logger.Error($"IO Error updating Lua file {filePath}: {ioEx.Message}"); }
-            catch (Exception ex) { Logger.Error($"Error updating Lua file {filePath}: {ex.ToString()}"); }
-            await Task.CompletedTask;
         }
+        
+        // Add DLC IDs to processed app IDs list if provided
+        if (dlcAppIds != null)
+        {
+            foreach (var dlcId in dlcAppIds.Keys)
+            {
+                processedAppIds.Add(dlcId);
+            }
+        }
+        
+        // Build the updated content in the exact format needed
+        List<string> outputLines = new List<string>();
+        
+        // First add the main app ID
+        outputLines.Add($"addappid({appId})");
+        
+        // Then add each depot with its key and manifest ID in pairs
+        foreach (var depotEntry in processedDepotKeys.OrderBy(kvp => kvp.Key))
+        {
+            uint currentDepotId = depotEntry.Key;
+            string currentDepotKey = depotEntry.Value;
+            
+            // Add the depot line with key
+            outputLines.Add($"addappid({currentDepotId}, 1, \"{currentDepotKey}\")");
+            
+            // Add the matching manifest line if we have one
+            if (processedManifestIds.TryGetValue(currentDepotId, out string manifestIdStr))
+            {
+                outputLines.Add($"setManifestid({currentDepotId}, \"{manifestIdStr}\", 0)");
+            }
+        }
+        
+        // Add any DLC app IDs without depot keys (simple app IDs)
+        List<uint> simpleDlcIds = new List<uint>();
+        foreach (var appId2 in processedAppIds)
+        {
+            // Skip the main app ID (already added) and any depots (already processed)
+            if (appId2 != appId && !processedDepotKeys.ContainsKey(appId2))
+            {
+                simpleDlcIds.Add(appId2);
+            }
+        }
+        
+        // Add any DLC lines with comments if available
+        foreach (var dlcId in simpleDlcIds.OrderBy(id => id))
+        {
+            string comment = dlcAppIds != null && dlcAppIds.TryGetValue(dlcId, out string name) && !string.IsNullOrWhiteSpace(name)
+                ? $" -- {name}"
+                : "";
+                
+            outputLines.Add($"addappid({dlcId}){comment}");
+        }
+        
+        // Write the updated content
+        File.WriteAllLines(filePath, outputLines);
+        Logger.Info($"Successfully updated Lua file: {filePath}");
+    }
+    catch (IOException ioEx)
+    {
+        Logger.Error($"IO Error updating Lua file {filePath}: {ioEx.Message}");
+    }
+    catch (Exception ex)
+    {
+        Logger.Error($"Error updating Lua file {filePath}: {ex.ToString()}");
+    }
+    
+    await Task.CompletedTask;
+}
         private static async Task ProcessManifestIndividuallyAsync(uint depotId, uint appId, ulong manifestId, string branch, string path, string depotKeyHex, DateTime manifestDate, Dictionary<uint, string> appDlcInfo, CDNClientPool cdnPoolInstance, uint directoryAppId = 0)
         {
             // Default directoryAppId to appId if not provided
@@ -1765,7 +1841,6 @@ namespace DepotDumper
                         Logger.Info($"Appending {appDlcInfo.Count} DLC entries to Lua files for parent app {directoryAppId} across {processedBranches.Count} processed branches.");
                         var dlcLinesToAdd = new List<string>();
                         dlcLinesToAdd.Add("");
-                        dlcLinesToAdd.Add("-- Discovered DLCs (without depots)");
                         foreach (var dlcEntry in appDlcInfo.OrderBy(kvp => kvp.Key))
                         {
                             dlcLinesToAdd.Add($"addappid({dlcEntry.Key}) -- {dlcEntry.Value}");
