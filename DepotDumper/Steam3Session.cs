@@ -297,61 +297,30 @@ namespace DepotDumper
 
 
         public async Task RequestDepotKey(uint depotId, uint appid = 0)
-        {
-            if (DepotKeys.ContainsKey(depotId) || bAborted)
-                return;
+{
+    if (DepotKeys.ContainsKey(depotId) || bAborted)
+        return;
 
-            // Try different app contexts for the key
-            List<uint> appContextsToTry = new List<uint>();
+    Logger.Info($"Requesting depot key for {depotId} using app context {appid}");
+    var depotKeyResult = await steamApps.GetDepotDecryptionKey(depotId, appid);
+    
+    if (depotKeyResult == null)
+    {
+        Logger.Error($"GetDepotDecryptionKey for depot {depotId} (app context {appid}) returned null.");
+        return;
+    }
+    
+    Console.WriteLine("Got depot key for {0} result: {1}", depotKeyResult.DepotID, depotKeyResult.Result);
+    Logger.Info($"Depot key result for {depotKeyResult.DepotID} (app context {appid}): {depotKeyResult.Result}");
 
-            // First try the app ID that was passed in
-            appContextsToTry.Add(appid);
+    if (depotKeyResult.Result != EResult.OK)
+    {
+        return;
+    }
 
-            // If depot ID looks like a DLC app ID (over 2 million), try using it as context
-            if (depotId > 2000000 && depotId != appid)
-            {
-                appContextsToTry.Add(depotId);
-                Logger.Info($"Will try using depotId {depotId} as app context after initial attempt");
-            }
-
-            // Add 0 as the last fallback (no app context)
-            if (!appContextsToTry.Contains(0))
-            {
-                appContextsToTry.Add(0);
-            }
-
-            foreach (var contextAppId in appContextsToTry)
-            {
-                Logger.Info($"Attempting to get depot key for {depotId} using app context {contextAppId}");
-                var depotKeyResult = await steamApps.GetDepotDecryptionKey(depotId, contextAppId);
-
-                if (depotKeyResult == null)
-                {
-                    Logger.Error($"GetDepotDecryptionKey for depot {depotId} (app context {contextAppId}) returned null.");
-                    continue;
-                }
-
-                Console.WriteLine("Got depot key for {0} result: {1}", depotKeyResult.DepotID, depotKeyResult.Result);
-                Logger.Info($"Depot key result for {depotKeyResult.DepotID} (app context {contextAppId}): {depotKeyResult.Result}");
-
-                if (depotKeyResult.Result != EResult.OK)
-                {
-                    continue;
-                }
-
-                if (depotKeyResult.DepotKey == null || depotKeyResult.DepotKey.Length == 0)
-                {
-                    Logger.Warning($"GetDepotDecryptionKey for depot {depotId} returned OK but key was null or empty.");
-                    continue;
-                }
-
-                DepotKeys[depotKeyResult.DepotID] = depotKeyResult.DepotKey;
-                Logger.Debug($"Stored depot key for {depotKeyResult.DepotID} (obtained with app context {contextAppId})");
-                return; // Successfully got and stored the key
-            }
-
-            Logger.Warning($"Failed to get depot key for {depotId} after trying multiple app contexts");
-        }
+    DepotKeys[depotKeyResult.DepotID] = depotKeyResult.DepotKey;
+    Logger.Debug($"Stored depot key for {depotKeyResult.DepotID}");
+}
         public async Task<ulong> GetDepotManifestRequestCodeAsync(uint depotId, uint appId, ulong manifestId, string branch)
         {
             if (bAborted)
