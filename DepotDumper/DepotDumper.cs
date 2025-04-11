@@ -1023,162 +1023,162 @@ namespace DepotDumper
             return dlcAppIds;
         }
         private static async Task UpdateLuaFileWithDlcAsync(string filePath, uint appId, uint depotId, string depotKeyHex, ulong manifestId, Dictionary<uint, string> dlcAppIds)
-{
-    try
-    {
-        // Create directory if it doesn't exist
-        string directoryPath = Path.GetDirectoryName(filePath);
-        if (!string.IsNullOrEmpty(directoryPath))
         {
-            Directory.CreateDirectory(directoryPath);
-        }
-
-        // Keep track of which apps we've already added
-        HashSet<uint> processedAppIds = new HashSet<uint>();
-        Dictionary<uint, string> processedDepotKeys = new Dictionary<uint, string>();
-        Dictionary<uint, string> processedManifestIds = new Dictionary<uint, string>();
-        
-        // Add the entries we know about from parameters
-        processedAppIds.Add(appId);
-        if (!string.IsNullOrEmpty(depotKeyHex))
-        {
-            processedDepotKeys[depotId] = depotKeyHex;
-        }
-        processedManifestIds[depotId] = manifestId.ToString();
-        
-        // Process existing content if file exists
-        if (File.Exists(filePath))
-        {
-            foreach (string line in File.ReadAllLines(filePath))
+            try
             {
-                string trimmedLine = line.Trim();
-                
-                // Skip empty lines and pure comment lines
-                if (string.IsNullOrWhiteSpace(trimmedLine) || (trimmedLine.StartsWith("--") && !trimmedLine.Contains("addappid(")))
+                // Create directory if it doesn't exist
+                string directoryPath = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrEmpty(directoryPath))
                 {
-                    continue;
+                    Directory.CreateDirectory(directoryPath);
                 }
 
-                // Process app ID lines
-                if (trimmedLine.StartsWith("addappid("))
+                // Keep track of which apps we've already added
+                HashSet<uint> processedAppIds = new HashSet<uint>();
+                Dictionary<uint, string> processedDepotKeys = new Dictionary<uint, string>();
+                Dictionary<uint, string> processedManifestIds = new Dictionary<uint, string>();
+
+                // Add the entries we know about from parameters
+                processedAppIds.Add(appId);
+                if (!string.IsNullOrEmpty(depotKeyHex))
                 {
-                    int startPos = "addappid(".Length;
-                    int endPos;
-                    
-                    // Check if it has a depot key (has a comma)
-                    if (trimmedLine.Contains(","))
+                    processedDepotKeys[depotId] = depotKeyHex;
+                }
+                processedManifestIds[depotId] = manifestId.ToString();
+
+                // Process existing content if file exists
+                if (File.Exists(filePath))
+                {
+                    foreach (string line in File.ReadAllLines(filePath))
                     {
-                        // This is a depot line with key
-                        endPos = trimmedLine.IndexOf(',');
-                        if (startPos < endPos && uint.TryParse(trimmedLine.Substring(startPos, endPos - startPos), out uint depotId2))
+                        string trimmedLine = line.Trim();
+
+                        // Skip empty lines and pure comment lines
+                        if (string.IsNullOrWhiteSpace(trimmedLine) || (trimmedLine.StartsWith("--") && !trimmedLine.Contains("addappid(")))
                         {
-                            // Extract the key if present
-                            int keyStartPos = trimmedLine.IndexOf('"');
-                            int keyEndPos = trimmedLine.LastIndexOf('"');
-                            if (keyStartPos >= 0 && keyEndPos > keyStartPos)
+                            continue;
+                        }
+
+                        // Process app ID lines
+                        if (trimmedLine.StartsWith("addappid("))
+                        {
+                            int startPos = "addappid(".Length;
+                            int endPos;
+
+                            // Check if it has a depot key (has a comma)
+                            if (trimmedLine.Contains(","))
                             {
-                                string key = trimmedLine.Substring(keyStartPos + 1, keyEndPos - keyStartPos - 1);
-                                processedDepotKeys[depotId2] = key;
+                                // This is a depot line with key
+                                endPos = trimmedLine.IndexOf(',');
+                                if (startPos < endPos && uint.TryParse(trimmedLine.Substring(startPos, endPos - startPos), out uint depotId2))
+                                {
+                                    // Extract the key if present
+                                    int keyStartPos = trimmedLine.IndexOf('"');
+                                    int keyEndPos = trimmedLine.LastIndexOf('"');
+                                    if (keyStartPos >= 0 && keyEndPos > keyStartPos)
+                                    {
+                                        string key = trimmedLine.Substring(keyStartPos + 1, keyEndPos - keyStartPos - 1);
+                                        processedDepotKeys[depotId2] = key;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                // This is a regular app ID line
+                                endPos = trimmedLine.IndexOf(')');
+                                if (startPos < endPos && uint.TryParse(trimmedLine.Substring(startPos, endPos - startPos), out uint appId2))
+                                {
+                                    processedAppIds.Add(appId2);
+                                }
+                            }
+                        }
+                        // Process manifest ID lines
+                        else if (trimmedLine.StartsWith("setManifestid("))
+                        {
+                            int startPos = "setManifestid(".Length;
+                            int endPos = trimmedLine.IndexOf(',');
+                            if (startPos < endPos && uint.TryParse(trimmedLine.Substring(startPos, endPos - startPos), out uint depotId2))
+                            {
+                                // Extract the manifest ID
+                                int manifestStartPos = trimmedLine.IndexOf('"', endPos);
+                                int manifestEndPos = trimmedLine.IndexOf('"', manifestStartPos + 1);
+                                if (manifestStartPos >= 0 && manifestEndPos > manifestStartPos)
+                                {
+                                    string manifestIdStr = trimmedLine.Substring(manifestStartPos + 1, manifestEndPos - manifestStartPos - 1);
+                                    processedManifestIds[depotId2] = manifestIdStr;
+                                }
                             }
                         }
                     }
-                    else
-                    {
-                        // This is a regular app ID line
-                        endPos = trimmedLine.IndexOf(')');
-                        if (startPos < endPos && uint.TryParse(trimmedLine.Substring(startPos, endPos - startPos), out uint appId2))
-                        {
-                            processedAppIds.Add(appId2);
-                        }
-                    }
                 }
-                // Process manifest ID lines
-                else if (trimmedLine.StartsWith("setManifestid("))
+
+                // Add DLC IDs to processed app IDs list if provided
+                if (dlcAppIds != null)
                 {
-                    int startPos = "setManifestid(".Length;
-                    int endPos = trimmedLine.IndexOf(',');
-                    if (startPos < endPos && uint.TryParse(trimmedLine.Substring(startPos, endPos - startPos), out uint depotId2))
+                    foreach (var dlcId in dlcAppIds.Keys)
                     {
-                        // Extract the manifest ID
-                        int manifestStartPos = trimmedLine.IndexOf('"', endPos);
-                        int manifestEndPos = trimmedLine.IndexOf('"', manifestStartPos + 1);
-                        if (manifestStartPos >= 0 && manifestEndPos > manifestStartPos)
-                        {
-                            string manifestIdStr = trimmedLine.Substring(manifestStartPos + 1, manifestEndPos - manifestStartPos - 1);
-                            processedManifestIds[depotId2] = manifestIdStr;
-                        }
+                        processedAppIds.Add(dlcId);
                     }
                 }
+
+                // Build the updated content in the exact format needed
+                List<string> outputLines = new List<string>();
+
+                // First add the main app ID
+                outputLines.Add($"addappid({appId})");
+
+                // Then add each depot with its key and manifest ID in pairs
+                foreach (var depotEntry in processedDepotKeys.OrderBy(kvp => kvp.Key))
+                {
+                    uint currentDepotId = depotEntry.Key;
+                    string currentDepotKey = depotEntry.Value;
+
+                    // Add the depot line with key
+                    outputLines.Add($"addappid({currentDepotId}, 1, \"{currentDepotKey}\")");
+
+                    // Add the matching manifest line if we have one
+                    if (processedManifestIds.TryGetValue(currentDepotId, out string manifestIdStr))
+                    {
+                        outputLines.Add($"setManifestid({currentDepotId}, \"{manifestIdStr}\", 0)");
+                    }
+                }
+
+                // Add any DLC app IDs without depot keys (simple app IDs)
+                List<uint> simpleDlcIds = new List<uint>();
+                foreach (var appId2 in processedAppIds)
+                {
+                    // Skip the main app ID (already added) and any depots (already processed)
+                    if (appId2 != appId && !processedDepotKeys.ContainsKey(appId2))
+                    {
+                        simpleDlcIds.Add(appId2);
+                    }
+                }
+
+                // Add any DLC lines with comments if available
+                foreach (var dlcId in simpleDlcIds.OrderBy(id => id))
+                {
+                    string comment = dlcAppIds != null && dlcAppIds.TryGetValue(dlcId, out string name) && !string.IsNullOrWhiteSpace(name)
+                        ? $" -- {name}"
+                        : "";
+
+                    outputLines.Add($"addappid({dlcId}){comment}");
+                }
+
+                // Write the updated content
+                File.WriteAllLines(filePath, outputLines);
+                Logger.Info($"Successfully updated Lua file: {filePath}");
             }
-        }
-        
-        // Add DLC IDs to processed app IDs list if provided
-        if (dlcAppIds != null)
-        {
-            foreach (var dlcId in dlcAppIds.Keys)
+            catch (IOException ioEx)
             {
-                processedAppIds.Add(dlcId);
+                Logger.Error($"IO Error updating Lua file {filePath}: {ioEx.Message}");
             }
-        }
-        
-        // Build the updated content in the exact format needed
-        List<string> outputLines = new List<string>();
-        
-        // First add the main app ID
-        outputLines.Add($"addappid({appId})");
-        
-        // Then add each depot with its key and manifest ID in pairs
-        foreach (var depotEntry in processedDepotKeys.OrderBy(kvp => kvp.Key))
-        {
-            uint currentDepotId = depotEntry.Key;
-            string currentDepotKey = depotEntry.Value;
-            
-            // Add the depot line with key
-            outputLines.Add($"addappid({currentDepotId}, 1, \"{currentDepotKey}\")");
-            
-            // Add the matching manifest line if we have one
-            if (processedManifestIds.TryGetValue(currentDepotId, out string manifestIdStr))
+            catch (Exception ex)
             {
-                outputLines.Add($"setManifestid({currentDepotId}, \"{manifestIdStr}\", 0)");
+                Logger.Error($"Error updating Lua file {filePath}: {ex.ToString()}");
             }
+
+            await Task.CompletedTask;
         }
-        
-        // Add any DLC app IDs without depot keys (simple app IDs)
-        List<uint> simpleDlcIds = new List<uint>();
-        foreach (var appId2 in processedAppIds)
-        {
-            // Skip the main app ID (already added) and any depots (already processed)
-            if (appId2 != appId && !processedDepotKeys.ContainsKey(appId2))
-            {
-                simpleDlcIds.Add(appId2);
-            }
-        }
-        
-        // Add any DLC lines with comments if available
-        foreach (var dlcId in simpleDlcIds.OrderBy(id => id))
-        {
-            string comment = dlcAppIds != null && dlcAppIds.TryGetValue(dlcId, out string name) && !string.IsNullOrWhiteSpace(name)
-                ? $" -- {name}"
-                : "";
-                
-            outputLines.Add($"addappid({dlcId}){comment}");
-        }
-        
-        // Write the updated content
-        File.WriteAllLines(filePath, outputLines);
-        Logger.Info($"Successfully updated Lua file: {filePath}");
-    }
-    catch (IOException ioEx)
-    {
-        Logger.Error($"IO Error updating Lua file {filePath}: {ioEx.Message}");
-    }
-    catch (Exception ex)
-    {
-        Logger.Error($"Error updating Lua file {filePath}: {ex.ToString()}");
-    }
-    
-    await Task.CompletedTask;
-}
         private static async Task ProcessManifestIndividuallyAsync(uint depotId, uint appId, ulong manifestId, string branch, string path, string depotKeyHex, DateTime manifestDate, Dictionary<uint, string> appDlcInfo, CDNClientPool cdnPoolInstance, uint directoryAppId = 0)
         {
             // Default directoryAppId to appId if not provided
@@ -1689,6 +1689,7 @@ namespace DepotDumper
                 currentCdnPool?.Shutdown();
             }
         }
+        // This is a patched version of the DumpAppAsync method in DepotDumper.cs
         public static async Task DumpAppAsync(bool select, uint specificAppId = INVALID_APP_ID)
         {
             var dumpPath = string.IsNullOrWhiteSpace(Config.DumpDirectory) ? DEFAULT_DUMP_DIR : Config.DumpDirectory;
@@ -1909,6 +1910,125 @@ namespace DepotDumper
                 }
 
                 return;
+            }
+            else // This is the streamlined "process all apps" case
+            {
+                // Get app IDs efficiently
+                var allAppIds = new HashSet<uint>();
+
+                try
+                {
+                    if (steam3.Licenses != null)
+                    {
+                        // Group licenses into batches to request package info more efficiently
+                        const int batchSize = 100;
+                        var licenseBatches = new List<List<uint>>();
+                        var currentBatch = new List<uint>();
+
+                        // Create batches of license IDs (limit to first 200 for speed)
+                        foreach (var license in steam3.Licenses.Take(200))
+                        {
+                            currentBatch.Add(license.PackageID);
+
+                            if (currentBatch.Count >= batchSize)
+                            {
+                                licenseBatches.Add(currentBatch);
+                                currentBatch = new List<uint>();
+                            }
+                        }
+
+                        // Add the last batch if it has any items
+                        if (currentBatch.Count > 0)
+                        {
+                            licenseBatches.Add(currentBatch);
+                        }
+
+                        // Process each batch
+                        foreach (var batch in licenseBatches)
+                        {
+                            await steam3.RequestPackageInfo(batch);
+
+                            foreach (var packageId in batch)
+                            {
+                                if (steam3.PackageInfo.TryGetValue(packageId, out var package) && package != null)
+                                {
+                                    var appIdsNode = package.KeyValues["appids"];
+                                    if (appIdsNode != null && appIdsNode != KeyValue.Invalid)
+                                    {
+                                        foreach (var appIdNode in appIdsNode.Children)
+                                        {
+                                            uint appId = appIdNode.AsUnsignedInteger();
+                                            if (appId != 0)
+                                            {
+                                                allAppIds.Add(appId);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Logger.Info($"Found {allAppIds.Count} apps in licenses to process");
+                    Console.WriteLine($"Found {allAppIds.Count} apps in licenses to process");
+
+                    // Process a limited number of apps
+                    int processedCount = 0;
+                    int maxApps = 5; // Process max 5 apps
+
+                    // Just take the first few apps we find
+                    foreach (var appId in allAppIds.Take(15))
+                    {
+                        try
+                        {
+                            // Skip invalid apps
+                            if (appId == 0 || appId == INVALID_APP_ID)
+                                continue;
+
+                            // Request app info and check if worth processing
+                            await steam3.RequestAppInfo(appId);
+                            var appName = GetAppName(appId);
+
+                            if (string.IsNullOrEmpty(appName))
+                            {
+                                continue;
+                            }
+
+                            (bool shouldProcess, var lastUpdated) = await ShouldProcessAppExtendedAsync(appId);
+                            if (!shouldProcess)
+                            {
+                                continue;
+                            }
+
+                            Console.WriteLine($"Processing app {appId}: {appName}");
+                            Logger.Info($"Processing app {appId}: {appName}");
+
+                            // Process this app
+                            await DumpAppAsync(select, appId);
+
+                            // Count how many we've processed
+                            processedCount++;
+
+                            // Limit how many apps we process
+                            if (processedCount >= maxApps)
+                            {
+                                Logger.Info($"Reached limit of {maxApps} apps, stopping processing");
+                                Console.WriteLine($"Reached limit of {maxApps} apps, stopping processing");
+                                break;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Warning($"Error processing app {appId}: {ex.Message}");
+                            Console.WriteLine($"Error processing app {appId}: {ex.Message}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error during all apps processing: {ex.ToString()}");
+                    Console.WriteLine($"Error during all apps processing: {ex.Message}");
+                }
             }
         }
         private static async Task ProcessSingleAppWithinGroup(uint currentAppId, uint parentAppId, bool select, string dumpPath, Dictionary<uint, string> appDlcInfo, DateTime? appLastUpdated)

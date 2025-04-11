@@ -160,9 +160,18 @@ namespace DepotDumper
             else if (config.AppIdsToProcess != null && config.AppIdsToProcess.Any())
             {
                 appIdsList.AddRange(config.AppIdsToProcess.Where(id => !config.ExcludedAppIds.Contains(id)));
-                if (appIdsList.Count > 0) { Logger.Info($"Processing {appIdsList.Count} App IDs from configuration file."); }
-                else if (config.AppIdsToProcess.Any()) { Logger.Warning("All App IDs specified in the configuration are excluded."); return 1; }
-                else { Logger.Info("AppIdsToProcess is empty in config. Processing all apps from licenses."); processAll = true; }
+                if (appIdsList.Count > 0) 
+                { 
+                    Logger.Info($"Processing {appIdsList.Count} App IDs from configuration file."); 
+                }
+                else 
+                { 
+                    // Modified logic: Instead of immediately returning with error,
+                    // fall back to processing all apps from licenses
+                    Logger.Warning("All App IDs specified in the configuration are excluded.");
+                    Logger.Info("Falling back to processing all apps from licenses.");
+                    processAll = true;
+                }
             }
             else
             {
