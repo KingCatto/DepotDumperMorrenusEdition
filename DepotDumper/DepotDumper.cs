@@ -1972,10 +1972,6 @@ namespace DepotDumper
                     Logger.Info($"Found {allAppIds.Count} apps in licenses to process");
                     Console.WriteLine($"Found {allAppIds.Count} apps in licenses to process");
 
-                    // Process a limited number of apps
-                    int processedCount = 0;
-                    int maxApps = 5; // Process max 5 apps
-
                     // Just take the first few apps we find
                     foreach (var appId in allAppIds.Take(15))
                     {
@@ -2006,16 +2002,6 @@ namespace DepotDumper
                             // Process this app
                             await DumpAppAsync(select, appId);
 
-                            // Count how many we've processed
-                            processedCount++;
-
-                            // Limit how many apps we process
-                            if (processedCount >= maxApps)
-                            {
-                                Logger.Info($"Reached limit of {maxApps} apps, stopping processing");
-                                Console.WriteLine($"Reached limit of {maxApps} apps, stopping processing");
-                                break;
-                            }
                         }
                         catch (Exception ex)
                         {
