@@ -217,7 +217,7 @@ namespace DepotDumper
                                     if (child.Name != "branches" && uint.TryParse(child.Name, out _))
                                     {
                                         hasDepots = true;
-                                        Logger.Debug($"DLC {appId} has its own depots");
+                                        Logger.Debug($"DLC {appId} has its own depot: {child.Name}");
                                         break;
                                     }
                                 }
@@ -561,6 +561,15 @@ namespace DepotDumper
         {
             try
             {
+                sourceDirectory = sourceDirectory.TrimEnd();
+                zipFilePath = zipFilePath.TrimEnd();
+                
+                string zipDirectory = Path.GetDirectoryName(zipFilePath);
+                if (!string.IsNullOrEmpty(zipDirectory) && !Directory.Exists(zipDirectory))
+                {
+                    Directory.CreateDirectory(zipDirectory);
+                }
+                
                 if (File.Exists(zipFilePath)) File.Delete(zipFilePath);
                 if (Directory.Exists(sourceDirectory) && Directory.EnumerateFileSystemEntries(sourceDirectory).Any())
                 {
@@ -584,14 +593,27 @@ namespace DepotDumper
         {
             try
             {
+                sourceDirName = sourceDirName.TrimEnd();
+                destDirName = destDirName.TrimEnd();
+                
                 DirectoryInfo dir = new DirectoryInfo(sourceDirName);
                 if (!dir.Exists) throw new DirectoryNotFoundException($"Source directory not found: {sourceDirName}");
+                
                 Directory.CreateDirectory(destDirName);
+                
                 foreach (FileInfo file in dir.GetFiles())
                 {
-                    try { string tempPath = Path.Combine(destDirName, file.Name); file.CopyTo(tempPath, true); }
-                    catch (IOException ioEx) { Logger.Warning($"Error copying file {file.Name}: {ioEx.Message}"); }
+                    try 
+                    { 
+                        string tempPath = Path.Combine(destDirName, file.Name); 
+                        file.CopyTo(tempPath, true); 
+                    }
+                    catch (IOException ioEx) 
+                    { 
+                        Logger.Warning($"Error copying file {file.Name}: {ioEx.Message}"); 
+                    }
                 }
+                
                 if (copySubDirs)
                 {
                     foreach (DirectoryInfo subdir in dir.GetDirectories())
@@ -601,7 +623,10 @@ namespace DepotDumper
                     }
                 }
             }
-            catch (Exception ex) { Logger.Error($"Error during directory copy from '{sourceDirName}' to '{destDirName}': {ex.ToString()}"); }
+            catch (Exception ex) 
+            { 
+                Logger.Error($"Error during directory copy from '{sourceDirName}' to '{destDirName}': {ex.ToString()}"); 
+            }
         }
         public static string GetAppName(uint appId)
         {
@@ -614,10 +639,15 @@ namespace DepotDumper
             {
                 string appFolder = Path.Combine(path, appId.ToString());
                 if (!Directory.Exists(appFolder)) return;
+                
+                branchName = branchName.Trim();
+                newFolderName = newFolderName.Trim();
                 string searchPattern = $"{appId}.{branchName}.*";
+                
                 var oldFolders = Directory.EnumerateDirectories(appFolder, searchPattern)
                     .Where(folder => !Path.GetFileName(folder).Equals(newFolderName, StringComparison.OrdinalIgnoreCase))
                     .ToList();
+                    
                 if (oldFolders.Count > 0)
                 {
                     Logger.Info($"Found {oldFolders.Count} older version folders for app {appId}, branch '{branchName}' to clean up.");
@@ -1410,7 +1440,7 @@ namespace DepotDumper
                         {
                             if (steam3 == null)
                             {
-                                Logger.Error("DownloadManifestAsync: steam3 session is null. Cannot get manifest request code.");
+                                Logger.Error($"GetDepotDecryptionKey for depot {depotId} (app context {appId}): steam3 session is null. Cannot get manifest request code.");
                                 throw new InvalidOperationException("Steam3 session is not initialized.");
                             }
 
@@ -2257,7 +2287,7 @@ namespace DepotDumper
 
             safeAppName = string.Join("_", safeAppName.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
             if (safeAppName.Length > 50) safeAppName = safeAppName.Substring(0, 50);
-            safeAppName = safeAppName.Replace("__", "_").Trim('_');
+            safeAppName = safeAppName.Replace("__", "_").Trim('_', ' ');
             if (string.IsNullOrEmpty(safeAppName)) safeAppName = $"Unknown_App_{appId}"; // Ensure some valid name
 
             // Make sure safe app name doesn't contain periods since they break folder name parsing
@@ -2323,7 +2353,7 @@ namespace DepotDumper
                 {
                     // Use a different name for the path variable inside the loop
                     // Use appId (effective/parent ID) for pathing
-                    string branchSourcePath = Path.Combine(appPath, branchName);
+                    string branchSourcePath = Path.Combine(appPath, branchName.Trim());
                     if (!Directory.Exists(branchSourcePath))
                     {
                         Logger.Warning($"Branch source directory not found for zipping: {branchSourcePath}");
@@ -2345,7 +2375,7 @@ namespace DepotDumper
                     Logger.Debug($"Zip Creation (App {appId}, Branch '{branchName}'): Using dateTimeStr: {dateTimeStr}");
 
                     // Use appId (effective/parent ID) in the folder name structure
-                    string folderName = $"{appId}.{branchName}.{dateTimeStr}.{safeAppName}";
+                    string folderName = $"{appId}.{branchName.Trim()}.{dateTimeStr}.{safeAppName}".Trim();
                     string dateBranchFolder = Path.Combine(appPath, folderName); // Base folder using appId
                     string zipFilePath = Path.Combine(dateBranchFolder, $"{appId}.zip"); // Zip name also uses appId
 
