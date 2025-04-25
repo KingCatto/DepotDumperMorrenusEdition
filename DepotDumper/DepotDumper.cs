@@ -1192,8 +1192,10 @@ namespace DepotDumper
             List<string> manifestErrors = new List<string>();
             string fullManifestPath = null;
             DepotManifest manifest = null;
+
+            // This will be set properly later - initialize with the API-provided date
             DateTime definitiveDate = manifestDate;
-            Logger.Debug($"Manifest {manifestId} (Depot {depotId}, App {appId}, Branch '{branch}'): Received manifestDate = {manifestDate}, Initial definitiveDate = {definitiveDate}");
+            Logger.Debug($"Manifest {manifestId} (Depot {depotId}, App {appId}, Branch '{branch}'): Received manifestDate = {manifestDate}");
 
             if (cdnPoolInstance == null)
             {
@@ -1246,16 +1248,13 @@ namespace DepotDumper
                         {
                             Logger.Debug($"Manifest {manifestId}: Successfully loaded existing file. Manifest.CreationTime = {manifest.CreationTime}");
 
-                            if (manifest.CreationTime.Year >= 2000)
-                            {
-                                definitiveDate = manifest.CreationTime;
-                                Logger.Debug($"Manifest {manifestId}: Using manifest creation time ({definitiveDate}) instead of API date ({manifestDate}) for skipped manifest.");
-                            }
-                            else
-                            {
-                                definitiveDate = manifestDate;
-                                Logger.Debug($"Manifest {manifestId}: Using API date ({definitiveDate}) because manifest creation time is invalid for skipped manifest.");
-                            }
+                            // Use the ManifestDate class to get a consistent date
+                            definitiveDate = ManifestDate.DetermineAndStoreDate(
+                                depotId,
+                                manifestId,
+                                branch,
+                                manifest,
+                                manifestDate);
 
                             // Use directory app ID (parent) in LUA file path
                             string branchLuaFile = Path.Combine(branchPath, $"{directoryAppId}.lua");
@@ -1302,16 +1301,13 @@ namespace DepotDumper
                             manifest.SaveToFile(fullManifestPath);
                             manifestDownloaded = true;
 
-                            if (manifest.CreationTime.Year >= 2000)
-                            {
-                                definitiveDate = manifest.CreationTime;
-                                Logger.Debug($"Manifest {manifestId}: Using manifest creation time ({definitiveDate}) instead of API date ({manifestDate}) after download.");
-                            }
-                            else
-                            {
-                                definitiveDate = manifestDate;
-                                Logger.Debug($"Manifest {manifestId}: Using API date ({definitiveDate}) because manifest creation time is invalid after download.");
-                            }
+                            // Use the ManifestDate class to get a consistent date
+                            definitiveDate = ManifestDate.DetermineAndStoreDate(
+                                depotId,
+                                manifestId,
+                                branch,
+                                manifest,
+                                manifestDate);
 
                             Logger.Info($"Successfully saved manifest {manifestId} from branch '{branch}' to {fullManifestPath}");
 

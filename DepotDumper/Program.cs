@@ -305,7 +305,8 @@ namespace DepotDumper
                 }
                 finally
                 {
-                    DepotDumper.ShutdownSteam3();
+                    ManifestDate.Save()
+                    DepotDumper.ShutdownSteam3();                    
                     if (isDoubleClick) { PlayCompletionSound(success); }
                 }
             }
