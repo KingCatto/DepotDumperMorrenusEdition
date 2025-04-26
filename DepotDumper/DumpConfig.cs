@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace DepotDumper
 {
     class DumpConfig
@@ -10,6 +12,7 @@ namespace DepotDumper
         public uint? LoginID { get; set; }
         public bool UseQrCode { get; set; }
         public bool UseNewNamingFormat { get; set; } = true;
-        public string LogLevel { get; set; } = "Info"; // Added LogLevel property
+        public string LogLevel { get; set; } = "Info";
+        public HashSet<uint> ExcludedAppIds { get; set; } = new HashSet<uint>();
     }
 }

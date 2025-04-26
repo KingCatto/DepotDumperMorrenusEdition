@@ -148,17 +148,48 @@ namespace DepotDumper
             if (!string.IsNullOrEmpty(appIdsFilePath))
             {
                 if (!File.Exists(appIdsFilePath)) { Logger.Error($"Error: App IDs file not found: {appIdsFilePath}"); return 1; }
-                try { Logger.Info($"Processing App IDs from file: {appIdsFilePath}"); }
+                try { 
+                    Logger.Info($"Processing App IDs from file: {appIdsFilePath}");
+                    var lines = File.ReadAllLines(appIdsFilePath);
+                    List<uint> fileAppIds = new List<uint>();
+                    
+                    foreach (var line in lines)
+                    {
+                        if (uint.TryParse(line.Trim(), out uint fileAppId) && fileAppId != 0)
+                        {
+                            fileAppIds.Add(fileAppId);
+                            if (!config.AppIdsToProcess.Contains(fileAppId))
+                                config.AppIdsToProcess.Add(fileAppId);
+                        }
+                    }
+                    
+                    // Filter out excluded apps
+                    appIdsList.AddRange(fileAppIds.Where(id => !config.ExcludedAppIds.Contains(id)));
+                    
+                    if (fileAppIds.Count != appIdsList.Count)
+                    {
+                        Logger.Info($"Filtered out {fileAppIds.Count - appIdsList.Count} excluded app IDs from file");
+                    }
+                }
                 catch (Exception ex) { Logger.Error($"Error reading app IDs file: {ex.Message}"); return 1; }
             }
             else if (specificAppId != DepotDumper.INVALID_APP_ID)
             {
+                // Check if the specific app is excluded
+                if (config.ExcludedAppIds.Contains(specificAppId))
+                {
+                    Logger.Info($"Skipping excluded app {specificAppId} specified in command line");
+                    Console.WriteLine($"Skipping excluded app {specificAppId}");
+                    return 0;
+                }
+                
                 Logger.Info($"Processing specific AppID: {specificAppId} from command line.");
                 appIdsList.Add(specificAppId);
                 if (!config.AppIdsToProcess.Contains(specificAppId)) { config.AppIdsToProcess.Add(specificAppId); }
             }
             else if (config.AppIdsToProcess != null && config.AppIdsToProcess.Any())
             {
+                // Filter out excluded app IDs here
                 appIdsList.AddRange(config.AppIdsToProcess.Where(id => !config.ExcludedAppIds.Contains(id)));
                 if (appIdsList.Count > 0) 
                 { 
@@ -225,6 +256,13 @@ namespace DepotDumper
                         bool select = HasParameter(args, "-select");
                         if (appIdsList.Count > 0)
                         {
+                            // Explicitly log the exclusion status for better debugging
+                            if (config.ExcludedAppIds.Count > 0)
+                            {
+                                Logger.Info($"Excluded App IDs: {string.Join(", ", config.ExcludedAppIds)}");
+                            }
+                            
+                            Logger.Info($"Processing app list count: {appIdsList.Count}");
                             await ProcessMultipleAppsAsync(appIdsList, select, dumpPath, config.MaxConcurrentApps);
                             success = true;
                         }

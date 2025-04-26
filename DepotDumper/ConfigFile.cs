@@ -18,7 +18,7 @@ namespace DepotDumper
         public string DumpDirectory { get; set; } = "dumps";
         public bool UseNewNamingFormat { get; set; } = true;
         public int MaxConcurrentApps { get; set; } = 1;
-        public string LogLevel { get; set; } = "Info"; // New property for LogLevel
+        public string LogLevel { get; set; } = "Info";
         public HashSet<uint> AppIdsToProcess { get; set; } = new HashSet<uint>();
         public HashSet<uint> ExcludedAppIds { get; set; } = new HashSet<uint>();
 
@@ -145,7 +145,22 @@ namespace DepotDumper
             DepotDumper.Config.LoginID = this.LoginID;
             DepotDumper.Config.DumpDirectory = this.DumpDirectory;
             DepotDumper.Config.UseNewNamingFormat = this.UseNewNamingFormat;
-            DepotDumper.Config.LogLevel = this.LogLevel; // Apply LogLevel to DumpConfig
+            DepotDumper.Config.LogLevel = this.LogLevel;
+            
+            if (DepotDumper.Config.ExcludedAppIds != null)
+            {
+                DepotDumper.Config.ExcludedAppIds.Clear();
+                foreach (var appId in this.ExcludedAppIds)
+                {
+                    DepotDumper.Config.ExcludedAppIds.Add(appId);
+                }
+            }
+            
+            if (this.ExcludedAppIds.Count > 0)
+            {
+                Logger.Info($"Applying {this.ExcludedAppIds.Count} app exclusions to DepotDumper.Config");
+                Logger.Debug($"Excluded App IDs: {string.Join(", ", this.ExcludedAppIds)}");
+            }
         }
 
         public void MergeCommandLineParameters(string[] args)
@@ -195,6 +210,52 @@ namespace DepotDumper
             {
                 LogLevel = Program.GetParameter<string>(args, "-log-level", "Info");
             }
+            
+            int excludeIndex = Program.IndexOfParam(args, "-exclude-app");
+            if (excludeIndex > -1 && excludeIndex < args.Length - 1)
+            {
+                int i = excludeIndex + 1;
+                while (i < args.Length && !args[i].StartsWith("-"))
+                {
+                    if (uint.TryParse(args[i], out uint excludeAppId))
+                    {
+                        ExcludedAppIds.Add(excludeAppId);
+                        Logger.Info($"Added app {excludeAppId} to exclusion list from command line");
+                        
+                        if (!AppIdsToProcess.Contains(excludeAppId))
+                        {
+                            AppIdsToProcess.Add(excludeAppId);
+                            Logger.Debug($"Added excluded app {excludeAppId} to main app list for tracking");
+                        }
+                    }
+                    i++;
+                }
+            }
+            
+            int includeIndex = Program.IndexOfParam(args, "-include-app");
+            if (includeIndex > -1 && includeIndex < args.Length - 1)
+            {
+                int i = includeIndex + 1;
+                while (i < args.Length && !args[i].StartsWith("-"))
+                {
+                    if (uint.TryParse(args[i], out uint includeAppId))
+                    {
+                        if (!AppIdsToProcess.Contains(includeAppId))
+                        {
+                            AppIdsToProcess.Add(includeAppId);
+                            Logger.Info($"Added app {includeAppId} to processing list from command line");
+                        }
+                        
+                        if (ExcludedAppIds.Contains(includeAppId))
+                        {
+                            ExcludedAppIds.Remove(includeAppId);
+                            Logger.Info($"Removed app {includeAppId} from exclusion list as explicitly included from command line");
+                        }
+                    }
+                    i++;
+                }
+            }
+            
             ApplyToDepotDumperConfig();
         }
     }

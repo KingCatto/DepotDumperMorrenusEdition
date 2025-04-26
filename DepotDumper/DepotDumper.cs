@@ -563,13 +563,13 @@ namespace DepotDumper
             {
                 sourceDirectory = sourceDirectory.TrimEnd();
                 zipFilePath = zipFilePath.TrimEnd();
-                
+
                 string zipDirectory = Path.GetDirectoryName(zipFilePath);
                 if (!string.IsNullOrEmpty(zipDirectory) && !Directory.Exists(zipDirectory))
                 {
                     Directory.CreateDirectory(zipDirectory);
                 }
-                
+
                 if (File.Exists(zipFilePath)) File.Delete(zipFilePath);
                 if (Directory.Exists(sourceDirectory) && Directory.EnumerateFileSystemEntries(sourceDirectory).Any())
                 {
@@ -595,25 +595,25 @@ namespace DepotDumper
             {
                 sourceDirName = sourceDirName.TrimEnd();
                 destDirName = destDirName.TrimEnd();
-                
+
                 DirectoryInfo dir = new DirectoryInfo(sourceDirName);
                 if (!dir.Exists) throw new DirectoryNotFoundException($"Source directory not found: {sourceDirName}");
-                
+
                 Directory.CreateDirectory(destDirName);
-                
+
                 foreach (FileInfo file in dir.GetFiles())
                 {
-                    try 
-                    { 
-                        string tempPath = Path.Combine(destDirName, file.Name); 
-                        file.CopyTo(tempPath, true); 
+                    try
+                    {
+                        string tempPath = Path.Combine(destDirName, file.Name);
+                        file.CopyTo(tempPath, true);
                     }
-                    catch (IOException ioEx) 
-                    { 
-                        Logger.Warning($"Error copying file {file.Name}: {ioEx.Message}"); 
+                    catch (IOException ioEx)
+                    {
+                        Logger.Warning($"Error copying file {file.Name}: {ioEx.Message}");
                     }
                 }
-                
+
                 if (copySubDirs)
                 {
                     foreach (DirectoryInfo subdir in dir.GetDirectories())
@@ -623,9 +623,9 @@ namespace DepotDumper
                     }
                 }
             }
-            catch (Exception ex) 
-            { 
-                Logger.Error($"Error during directory copy from '{sourceDirName}' to '{destDirName}': {ex.ToString()}"); 
+            catch (Exception ex)
+            {
+                Logger.Error($"Error during directory copy from '{sourceDirName}' to '{destDirName}': {ex.ToString()}");
             }
         }
         public static string GetAppName(uint appId)
@@ -639,15 +639,15 @@ namespace DepotDumper
             {
                 string appFolder = Path.Combine(path, appId.ToString());
                 if (!Directory.Exists(appFolder)) return;
-                
+
                 branchName = branchName.Trim();
                 newFolderName = newFolderName.Trim();
                 string searchPattern = $"{appId}.{branchName}.*";
-                
+
                 var oldFolders = Directory.EnumerateDirectories(appFolder, searchPattern)
                     .Where(folder => !Path.GetFileName(folder).Equals(newFolderName, StringComparison.OrdinalIgnoreCase))
                     .ToList();
-                    
+
                 if (oldFolders.Count > 0)
                 {
                     Logger.Info($"Found {oldFolders.Count} older version folders for app {appId}, branch '{branchName}' to clean up.");
@@ -1720,6 +1720,16 @@ namespace DepotDumper
             var dumpPath = string.IsNullOrWhiteSpace(Config.DumpDirectory) ? DEFAULT_DUMP_DIR : Config.DumpDirectory;
             Directory.CreateDirectory(Path.Combine(dumpPath, CONFIG_DIR));
 
+            // Add explicit check for app exclusion
+            if (specificAppId != INVALID_APP_ID && Config.ExcludedAppIds != null && Config.ExcludedAppIds.Contains(specificAppId))
+            {
+                Console.WriteLine($"Skipping excluded app {specificAppId}");
+                Logger.Info($"Skipping excluded app {specificAppId}");
+                StatisticsTracker.TrackAppStart(specificAppId, $"App {specificAppId} (Excluded)");
+                StatisticsTracker.TrackAppCompletion(specificAppId, true, new List<string> { "App was in exclusion list" });
+                return;
+            }
+
             Console.WriteLine("Getting licenses...");
 
             if (specificAppId == INVALID_APP_ID && steam3.Licenses == null)
@@ -1997,6 +2007,18 @@ namespace DepotDumper
                     Logger.Info($"Found {allAppIds.Count} apps in licenses to process");
                     Console.WriteLine($"Found {allAppIds.Count} apps in licenses to process");
 
+                    // Filter out excluded apps before processing
+                    if (Config.ExcludedAppIds != null && Config.ExcludedAppIds.Count > 0)
+                    {
+                        var excludedCount = allAppIds.Count(id => Config.ExcludedAppIds.Contains(id));
+                        if (excludedCount > 0)
+                        {
+                            Logger.Info($"Filtering out {excludedCount} excluded apps");
+                            allAppIds = new HashSet<uint>(allAppIds.Where(id => !Config.ExcludedAppIds.Contains(id)));
+                            Console.WriteLine($"After filtering exclusions: {allAppIds.Count} apps to process");
+                        }
+                    }
+
                     // Process ALL found apps, no Take() limit
                     foreach (var appId in allAppIds)
                     {
@@ -2005,6 +2027,13 @@ namespace DepotDumper
                             // Skip invalid apps
                             if (appId == 0 || appId == INVALID_APP_ID)
                                 continue;
+
+                            // Double-check exclusion (in case it was missed earlier)
+                            if (Config.ExcludedAppIds != null && Config.ExcludedAppIds.Contains(appId))
+                            {
+                                Logger.Info($"Skipping excluded app {appId}");
+                                continue;
+                            }
 
                             // Request app info and check if worth processing
                             await steam3.RequestAppInfo(appId);
