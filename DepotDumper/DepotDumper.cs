@@ -39,6 +39,15 @@ namespace DepotDumper
         public const string DEFAULT_DUMP_DIR = "dumps";
         public const string CONFIG_DIR = ".DepotDumper";
         private static readonly ConcurrentDictionary<string, DateTime> branchLastModified = new ConcurrentDictionary<string, DateTime>();
+        // Add this public method to your DepotDumper.cs file
+        public static void AddUpdateBranchDate(string branch, DateTime date)
+        {
+            branchLastModified.AddOrUpdate(branch, date, (key, existingDate) =>
+            {
+                // Keep existing date from tracking system
+                return existingDate;
+            });
+        }
         private static readonly ConcurrentHashSet<string> processedBranches = new ConcurrentHashSet<string>();
         private static int anyNewManifestsFlag = 0;
         private static bool anyNewManifests
@@ -1223,7 +1232,7 @@ namespace DepotDumper
             string fullManifestPath = null;
             DepotManifest manifest = null;
 
-            // This will be set properly later - initialize with the API-provided date
+            // Initialize with the API-provided date
             DateTime definitiveDate = manifestDate;
             Logger.Debug($"Manifest {manifestId} (Depot {depotId}, App {appId}, Branch '{branch}'): Received manifestDate = {manifestDate}");
 
@@ -1245,9 +1254,40 @@ namespace DepotDumper
                 var manifestFilename = $"{depotId}_{manifestId}.manifest";
                 fullManifestPath = Path.Combine(branchPath, manifestFilename);
 
+                // If manifest already exists, simply mark it as skipped and update stats WITHOUT MODIFYING ANYTHING
+                if (File.Exists(fullManifestPath))
+                {
+                    manifestSkipped = true;
+                    Logger.Info($"Manifest {manifestId} exists for depot {depotId} branch '{branch}', skipping completely.");
+
+                    // Check if this manifest is in our date tracker
+                    var existingEntry = ManifestDateTracker.GetEntry(depotId, manifestId, branch);
+                    if (existingEntry == null)
+                    {
+                        // If not in tracker but exists on disk, try to get date from folder name
+                        var dateFromFolder = Util.GetDateFromExistingFolder(appPath, cleanBranchName, directoryAppId);
+                        if (dateFromFolder.HasValue)
+                        {
+                            // Store in tracker but don't modify anything on disk
+                            ManifestDateTracker.SetEntry(depotId, manifestId, branch, dateFromFolder.Value);
+                        }
+                    }
+
+                    // Add the branch to processed branches but DO NOT update any dates or folders
+                    if (!processedBranches.Contains(cleanBranchName))
+                    {
+                        processedBranches.Add(cleanBranchName);
+                    }
+
+                    // Track stats for existing manifest but don't modify anything
+                    StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, true, fullManifestPath, null, null);
+                    return; // Exit early - don't process anything else for existing manifests
+                }
+
+                // Only clean up old manifests if we're downloading a new one
                 try
                 {
-                    // Clean up old manifests
+                    // Clean up old manifests with same depot ID but different manifest ID
                     var oldManifestFiles = Directory.GetFiles(branchPath, $"{depotId}_*.manifest");
                     foreach (var oldManifest in oldManifestFiles)
                     {
@@ -1264,118 +1304,86 @@ namespace DepotDumper
                     Logger.Warning($"Failed to clean up old manifests for depot {depotId} in branch '{cleanBranchName}': {ex.Message}");
                 }
 
-                bool shouldDownload = !File.Exists(fullManifestPath);
-                if (!shouldDownload)
+                // At this point we know we need to download the manifest
+                try
                 {
-                    manifestSkipped = true;
-                    Logger.Info($"Manifest {manifestId} exists for depot {depotId} branch '{branch}', skipping download.");
-                    Logger.Debug($"Manifest {manifestId}: Attempting to load existing file: {fullManifestPath}");
-
-                    try
-                    {
-                        manifest = Util.LoadManifestFromFile(branchPath, depotId, manifestId, true);
-                        if (manifest != null)
-                        {
-                            Logger.Debug($"Manifest {manifestId}: Successfully loaded existing file. Manifest.CreationTime = {manifest.CreationTime}");
-
-                            // Use the ManifestDate class to get a consistent date
-                            definitiveDate = ManifestDate.DetermineAndStoreDate(
-                                depotId,
-                                manifestId,
-                                branch,
-                                manifest,
-                                manifestDate);
-
-                            // Use directory app ID (parent) in LUA file path
-                            string branchLuaFile = Path.Combine(branchPath, $"{directoryAppId}.lua");
-                            Console.WriteLine($"Updating Lua file for existing manifest {manifestId} in branch '{branch}'");
-                            await UpdateLuaFileWithDlcAsync(branchLuaFile, directoryAppId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
-                        }
-                        else
-                        {
-                            manifestErrors.Add($"Failed to load existing manifest file: {fullManifestPath}");
-                            Logger.Warning($"Manifest {manifestId}: Could not load existing manifest {fullManifestPath} (Util.LoadManifestFromFile returned null).");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        manifestErrors.Add($"Error loading existing manifest {manifestId}: {ex.Message}");
-                        Logger.Error($"Manifest {manifestId}: Exception loading existing manifest {fullManifestPath}: {ex.ToString()}");
-                    }
-
-                    StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, true, fullManifestPath, manifestErrors.Count > 0 ? manifestErrors : null, manifest?.CreationTime);
-                    Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} skipped for depot {depotId} branch '{branch}'");
+                    Logger.Info($"DownloadManifestAsync called for manifest {manifestId}, depot {depotId}, app {appId}, branch '{branch}'");
+                    manifest = await DownloadManifestAsync(depotId, appId, manifestId, branch, cdnPoolInstance);
+                    if (manifest != null)
+                        Logger.Debug($"Manifest {manifestId}: Download successful. Manifest.CreationTime = {manifest.CreationTime}");
+                    else
+                        Logger.Warning($"Manifest {manifestId}: Download failed (manifest is null).");
                 }
-                else // Should Download
+                catch (Exception ex)
+                {
+                    string errorMsg = $"Error downloading manifest {manifestId}: {ex.Message}";
+                    manifestErrors.Add(errorMsg);
+                    Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}");
+                }
+
+                if (manifest != null)
                 {
                     try
                     {
-                        Logger.Info($"DownloadManifestAsync called for manifest {manifestId}, depot {depotId}, app {appId}, branch '{branch}'");
-                        manifest = await DownloadManifestAsync(depotId, appId, manifestId, branch, cdnPoolInstance);
-                        if (manifest != null)
-                            Logger.Debug($"Manifest {manifestId}: Download successful. Manifest.CreationTime = {manifest.CreationTime}");
-                        else
-                            Logger.Warning($"Manifest {manifestId}: Download failed (manifest is null).");
+                        manifest.SaveToFile(fullManifestPath);
+                        manifestDownloaded = true;
+
+                        // For newly downloaded manifests, get the date from the manifest itself
+                        if (manifest.CreationTime.Year >= 2000)
+                        {
+                            definitiveDate = manifest.CreationTime;
+                            Logger.Debug($"Using manifest creation time for manifest {manifestId}: {definitiveDate}");
+                        }
+
+                        // Store in the date cache for future reference
+                        ManifestDateTracker.SetEntry(depotId, manifestId, branch, definitiveDate);
+
+                        Logger.Info($"Successfully saved manifest {manifestId} from branch '{branch}' to {fullManifestPath}");
+
+                        // Use directory app ID (parent) in LUA file path
+                        string branchLuaFile = Path.Combine(branchPath, $"{directoryAppId}.lua");
+                        await UpdateLuaFileWithDlcAsync(branchLuaFile, directoryAppId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
+
+                        // Flag that we have new manifests - this is used to trigger folder cleanup later
+                        anyNewManifests = true;
+
+                        // Add the branch to processed branches
+                        if (!processedBranches.Contains(cleanBranchName))
+                        {
+                            processedBranches.Add(cleanBranchName);
+                        }
+
+                        // Update branch last modified date only for new downloads
+                        branchLastModified.AddOrUpdate(cleanBranchName, definitiveDate, (key, existingDate) =>
+                        {
+                            // Always prefer the older date
+                            var dateToUse = existingDate;
+                            if (definitiveDate < existingDate)
+                            {
+                                dateToUse = definitiveDate;
+                            }
+                            Logger.Debug($"Manifest {manifestId}: Updating branch '{key}'. ExistingDate={existingDate}, NewDate={definitiveDate}. Using {dateToUse}");
+                            return dateToUse;
+                        });
+
+                        StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, true, false, fullManifestPath, null, manifest.CreationTime);
+                        Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} downloaded successfully for depot {depotId} branch '{branch}'");
                     }
                     catch (Exception ex)
                     {
-                        string errorMsg = $"Error downloading manifest {manifestId}: {ex.Message}";
+                        string errorMsg = $"Failed to save manifest {manifestId} to file {fullManifestPath}: {ex.Message}";
                         manifestErrors.Add(errorMsg);
                         Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}");
-                    }
-
-                    if (manifest != null)
-                    {
-                        try
-                        {
-                            manifest.SaveToFile(fullManifestPath);
-                            manifestDownloaded = true;
-
-                            // Use the ManifestDate class to get a consistent date
-                            definitiveDate = ManifestDate.DetermineAndStoreDate(
-                                depotId,
-                                manifestId,
-                                branch,
-                                manifest,
-                                manifestDate);
-
-                            Logger.Info($"Successfully saved manifest {manifestId} from branch '{branch}' to {fullManifestPath}");
-
-                            // Use directory app ID (parent) in LUA file path
-                            string branchLuaFile = Path.Combine(branchPath, $"{directoryAppId}.lua");
-                            await UpdateLuaFileWithDlcAsync(branchLuaFile, directoryAppId, depotId, depotKeyHex?.ToLowerInvariant(), manifestId, appDlcInfo ?? new Dictionary<uint, string>());
-                            anyNewManifests = true;
-                            StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, true, false, fullManifestPath, null, manifest.CreationTime);
-                            Logger.Debug($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} downloaded successfully for depot {depotId} branch '{branch}'");
-                        }
-                        catch (Exception ex)
-                        {
-                            string errorMsg = $"Failed to save manifest {manifestId} to file {fullManifestPath}: {ex.Message}";
-                            manifestErrors.Add(errorMsg);
-                            Logger.Error($"{errorMsg} - StackTrace: {ex.StackTrace}");
-                            StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, fullManifestPath, manifestErrors, null);
-                        }
-                    }
-                    else
-                    {
-                        manifestErrors.Add($"Download failed (manifest null) for {manifestId}");
-                        Logger.Error($"DownloadManifestAsync returned null for manifest {manifestId}, depot {depotId}, branch '{branch}'.");
-                        StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, null, manifestErrors, null);
-                        Logger.Warning($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} download failed for depot {depotId} branch '{branch}'");
+                        StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, fullManifestPath, manifestErrors, null);
                     }
                 }
-
-                Logger.Debug($"Manifest {manifestId} (Depot {depotId}, Branch '{branch}'): Final definitiveDate before AddOrUpdate = {definitiveDate}");
-
-                branchLastModified.AddOrUpdate(cleanBranchName, definitiveDate, (key, existingDate) =>
+                else
                 {
-                    // Always prefer the older date
-                    var dateToUse = existingDate;
-                    Logger.Debug($"Manifest {manifestId}: Updating branch '{key}'. ExistingDate={existingDate}, NewDate={definitiveDate}. Using {dateToUse}");
-                    return dateToUse;
-                });
-
-                processedBranches.Add(cleanBranchName);
+                    manifestErrors.Add($"Download failed (manifest null) for {manifestId}");
+                    Logger.Error($"DownloadManifestAsync returned null for manifest {manifestId}, depot {depotId}, branch '{branch}'.");
+                    StatisticsTracker.TrackManifestProcessing(depotId, manifestId, branch, false, false, null, manifestErrors, null);
+                    Logger.Warning($"[ProcessManifestIndividuallyAsync] Manifest {manifestId} download failed for depot {depotId} branch '{branch}'");
+                }
             }
             catch (Exception ex)
             {
@@ -1762,6 +1770,8 @@ namespace DepotDumper
 
                     // Use parent app ID for directory structure if this is a DLC
                     uint directoryAppId = isDlc ? parentAppId : specificAppId;
+
+                    ManifestDateTracker.PreloadBranchDatesFromFolders(dumpPath, directoryAppId);
 
                     // If this is a DLC, make sure we have the parent app's info too
                     if (isDlc)

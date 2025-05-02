@@ -205,5 +205,145 @@ namespace DepotDumper
                 tasksInFlight.Remove(completedTask);
             } while (index < queue.Length || tasksInFlight.Count != 0);
         }
+    public static DateTime? GetDateFromFolderName(string folderPath)
+        {
+            try
+            {
+                // Get just the folder name from the path
+                string folderName = Path.GetFileName(folderPath);
+                
+                // Example format: "284830.public.2014-04-23_12-01-22.Clockwork Tales_ Of Glass and Ink"
+                
+                // Split the folder name by dots
+                string[] parts = folderName.Split('.');
+                
+                // Check if we have enough parts (we need at least 3: appId, branch, dateTime)
+                if (parts.Length < 3)
+                {
+                    Logger.Warning($"Folder name format doesn't match expected pattern: {folderName}");
+                    return null;
+                }
+                
+                // The date part should be the third element (index 2)
+                string datePart = parts[2];
+                
+                // Split the date part which might look like "2014-04-23_12-01-22"
+                string[] dateTimeParts = datePart.Split('_');
+                
+                // Check if we have date and time
+                if (dateTimeParts.Length != 2)
+                {
+                    // Try alternate formats or just return null
+                    if (DateTime.TryParse(datePart, out DateTime dateResult))
+                    {
+                        return dateResult;
+                    }
+                    Logger.Warning($"Date time format doesn't match expected pattern: {datePart}");
+                    return null;
+                }
+                
+                // Parse the date and time parts
+                string datePortion = dateTimeParts[0]; // 2014-04-23
+                string timePortion = dateTimeParts[1].Replace('-', ':'); // 12-01-22 -> 12:01:22
+                
+                // Try to parse the combined date and time
+                string dateTimeString = $"{datePortion} {timePortion}";
+                if (DateTime.TryParse(dateTimeString, out DateTime result))
+                {
+                    return result;
+                }
+                
+                Logger.Warning($"Could not parse date and time from: {dateTimeString}");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error parsing date from folder name: {ex.Message}");
+                return null;
+            }
+        }
+
+        public static Dictionary<string, DateTime> GetDatesFromFolders(string baseDirectory, uint appId)
+        {
+            var result = new Dictionary<string, DateTime>();
+            
+            try
+            {
+                // Path to the app's directory
+                string appDirectory = Path.Combine(baseDirectory, appId.ToString());
+                
+                // Check if the directory exists
+                if (!Directory.Exists(appDirectory))
+                {
+                    Logger.Warning($"App directory does not exist: {appDirectory}");
+                    return result;
+                }
+                
+                // Get all subdirectories that match the pattern for this app
+                string searchPattern = $"{appId}.*";
+                var folders = Directory.GetDirectories(appDirectory, searchPattern);
+                
+                foreach (var folder in folders)
+                {
+                    // Extract the branch name from the folder name
+                    // Format: "284830.public.2014-04-23_12-01-22.Clockwork Tales_ Of Glass and Ink"
+                    string folderName = Path.GetFileName(folder);
+                    string[] parts = folderName.Split('.');
+                    
+                    if (parts.Length < 3)
+                    {
+                        Logger.Warning($"Skipping folder with unexpected format: {folderName}");
+                        continue;
+                    }
+                    
+                    // The branch is the second part
+                    string branch = parts[1];
+                    
+                    // Get the date from the folder name
+                    DateTime? folderDate = GetDateFromFolderName(folder);
+                    
+                    if (folderDate.HasValue)
+                    {
+                        // Store the branch and date
+                        string cleanBranchName = branch.Replace('/', '_').Replace('\\', '_');
+                        result[cleanBranchName] = folderDate.Value;
+                        Logger.Debug($"Found date {folderDate.Value} for branch '{cleanBranchName}' in folder {folderName}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error getting dates from folders: {ex.Message}");
+            }
+            
+            return result;
+        }
+
+        public static DateTime? GetDateFromExistingFolder(string appPath, string branchName, uint appId)
+        {
+            try
+            {
+                // Look for folders matching the pattern "appId.branchName.*" 
+                var folders = Directory.GetDirectories(appPath, $"{appId}.{branchName}.*");
+                
+                foreach (var folder in folders)
+                {
+                    DateTime? folderDate = GetDateFromFolderName(folder);
+                    if (folderDate.HasValue)
+                    {
+                        Logger.Debug($"Found date {folderDate.Value} from existing folder: {Path.GetFileName(folder)}");
+                        return folderDate.Value;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error getting date from existing folders: {ex.Message}");
+            }
+            
+            return null;
+        }
     }
 }
+
+

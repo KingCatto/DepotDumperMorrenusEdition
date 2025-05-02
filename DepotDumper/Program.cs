@@ -343,6 +343,7 @@ namespace DepotDumper
                 }
                 finally
                 {
+                    ManifestDateTracker.SaveToFile();
                     DepotDumper.ShutdownSteam3();
                     ManifestDate.Save();                    
                     if (isDoubleClick) { PlayCompletionSound(success); }
